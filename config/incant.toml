@@ -1,0 +1,30 @@
+# Incant — Voice Dictation for Omarchy
+# Config location: ~/.config/incant/config.toml
+
+# Path to the ONNX model directory.
+# If not set, defaults to ~/.cache/incant/models/moonshine-tiny-en-int8
+# model_path = "/home/zaakir/.cache/incant/models/moonshine-tiny-en-int8"
+
+# Sample rate the model expects (do not change unless you know what you're doing).
+sample_rate = 16000
+
+# Unix socket path for IPC between CLI and daemon.
+# socket_path = "/run/user/1000/incant/daemon.sock"
+
+# Audio capture buffer size in samples.
+buffer_size = 4096
+
+# Output method priority for text injection.
+# wtype     = type directly into focused window (Wayland virtual_keyboard)
+# dotool    = type via uinput (fallback)
+# wl-copy   = copy to clipboard (last resort)
+output_methods = ["wtype", "dotool", "wl-copy"]
+
+# Show the GTK4 overlay HUD while recording/transcribing.
+show_overlay = true
+
+# ONNX inference threads (0 = auto).
+num_threads = 4
+
+# Enable debug logging and save last_recording.wav.
+debug = false

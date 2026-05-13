@@ -1,0 +1,45 @@
+[package]
+name = "incant-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Workspace deps
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }
+
+# Audio
+cpal = { version = "0.15", features = ["jack"] }
+hound = "3.5"
+
+# STT
+sherpa-rs = { version = "0.6.8", features = ["download-binaries"] }
+
+# IPC - using tokio Unix sockets directly
+
+# Resampling for audio
+rubato = "0.15"
+dasp_sample = "0.11"
+
+# Utils
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+
+# Async primitives
+tokio-util = "0.7"
+
+# HTTP client for model download
+reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+
+# Sound effects
+rodio = { version = "0.20", default-features = false, features = ["wav"] }

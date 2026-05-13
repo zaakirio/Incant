@@ -1,0 +1,14 @@
+[Unit]
+Description=Incant voice dictation daemon
+After=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/incant-daemon
+Restart=on-failure
+RestartSec=5
+Environment="RUST_LOG=incant_daemon=info"
+Environment="LD_LIBRARY_PATH=/usr/lib/incant"
+
+[Install]
+WantedBy=default.target

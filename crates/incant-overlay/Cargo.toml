@@ -1,0 +1,20 @@
+[package]
+name = "incant-overlay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+# GTK4 + Layer Shell
+gtk4 = { version = "0.11", features = ["v4_12"] }
+gtk4-layer-shell = { version = "0.8" }
+dirs = "6"
+glib = "0.20"
