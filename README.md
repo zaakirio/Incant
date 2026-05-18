@@ -147,7 +147,7 @@ Incant looks for `~/.config/incant/config.toml`; the file is created with defaul
 
 ```toml
 # Path to the ONNX model directory.
-# Defaults to ~/.cache/incant/models/parakeet-tdt-0.6b-v2-int8
+# Defaults to ~/.cache/incant/models/parakeet-tdt-0.6b-v3-int8
 # To use Moonshine Tiny instead (~120 MB, English-only), set a path whose
 # basename contains "moonshine":
 # model_path = "/home/USER/.cache/incant/models/moonshine-tiny-en-int8"

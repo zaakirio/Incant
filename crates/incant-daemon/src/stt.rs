@@ -15,31 +15,35 @@ struct ModelFile {
     size: u64,
 }
 
-/// Parakeet TDT 0.6B v2 INT8 — pinned to a specific HuggingFace commit so the
-/// integrity of the bits we load into ONNX Runtime is not at the mercy of a
-/// moving `main` branch.
-const PARAKEET_REPO: &str = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
-const PARAKEET_REVISION: &str = "1ab9323565ddb038682214b292f588070a538ce2";
+/// Parakeet TDT 0.6B v3 INT8 — NVIDIA's multilingual successor to v2.
+/// Supports 25 European languages (English + Bulgarian, Croatian, Czech,
+/// Danish, Dutch, Estonian, Finnish, French, German, Greek, Hungarian,
+/// Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian,
+/// Slovak, Slovenian, Spanish, Swedish, Russian, Ukrainian).
+/// Pinned to a specific HuggingFace commit so the integrity of the bits we
+/// load into ONNX Runtime is not at the mercy of a moving `main` branch.
+const PARAKEET_REPO: &str = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8";
+const PARAKEET_REVISION: &str = "2bda32ec70b097a55adaa07d9a7173915b43cc78";
 const PARAKEET_FILES: &[ModelFile] = &[
     ModelFile {
         name: "encoder.int8.onnx",
-        sha256: "a32b12d17bbbc309d0686fbbcc2987b5e9b8333a7da83fa6b089f0a2acd651ab",
-        size: 652_184_296,
+        sha256: "acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247",
+        size: 652_184_281,
     },
     ModelFile {
         name: "decoder.int8.onnx",
-        sha256: "b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e",
-        size: 7_257_753,
+        sha256: "179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e",
+        size: 11_845_275,
     },
     ModelFile {
         name: "joiner.int8.onnx",
-        sha256: "7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2",
-        size: 1_739_080,
+        sha256: "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3",
+        size: 6_355_277,
     },
     ModelFile {
         name: "tokens.txt",
-        sha256: "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d",
-        size: 9_384,
+        sha256: "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+        size: 93_939,
     },
 ];
 
@@ -73,9 +77,8 @@ const MOONSHINE_FILES: &[ModelFile] = &[
     },
 ];
 
-pub enum SttEngine {
-    Moonshine(sherpa_rs::moonshine::MoonshineRecognizer),
-    Transducer(sherpa_rs::transducer::TransducerRecognizer),
+pub struct SttEngine {
+    recognizer: sherpa_onnx::OfflineRecognizer,
 }
 
 impl SttEngine {
@@ -98,7 +101,7 @@ impl SttEngine {
         anyhow::bail!(
             "No recognized model files found in {:?}. Run `incant-daemon download-model` first.",
             model_path
-        );
+        )
     }
 
     fn load_moonshine(model_path: &Path, config: &Config) -> Result<Self> {
@@ -108,20 +111,23 @@ impl SttEngine {
         let uncached_decoder = model_path.join("uncached_decode.int8.onnx");
         let tokens = model_path.join("tokens.txt");
 
-        let recognizer =
-            sherpa_rs::moonshine::MoonshineRecognizer::new(sherpa_rs::moonshine::MoonshineConfig {
-                preprocessor: preprocessor.to_string_lossy().into(),
-                encoder: encoder.to_string_lossy().into(),
-                cached_decoder: cached_decoder.to_string_lossy().into(),
-                uncached_decoder: uncached_decoder.to_string_lossy().into(),
-                tokens: tokens.to_string_lossy().into(),
-                provider: Some(detect_provider()),
-                num_threads: Some(config.num_threads.max(1)),
-                debug: config.debug,
-            })
-            .map_err(|e| anyhow::anyhow!("creating Moonshine recognizer: {}", e))?;
+        let mut recognizer_config = sherpa_onnx::OfflineRecognizerConfig::default();
+        recognizer_config.model_config.moonshine = sherpa_onnx::OfflineMoonshineModelConfig {
+            preprocessor: Some(preprocessor.to_string_lossy().into()),
+            encoder: Some(encoder.to_string_lossy().into()),
+            cached_decoder: Some(cached_decoder.to_string_lossy().into()),
+            uncached_decoder: Some(uncached_decoder.to_string_lossy().into()),
+            ..Default::default()
+        };
+        recognizer_config.model_config.tokens = Some(tokens.to_string_lossy().into());
+        recognizer_config.model_config.provider = Some(detect_provider());
+        recognizer_config.model_config.num_threads = config.num_threads.max(1);
+        recognizer_config.decoding_method = Some("greedy_search".into());
 
-        Ok(SttEngine::Moonshine(recognizer))
+        let recognizer = sherpa_onnx::OfflineRecognizer::create(&recognizer_config)
+            .ok_or_else(|| anyhow::anyhow!("creating Moonshine recognizer failed"))?;
+
+        Ok(SttEngine { recognizer })
     }
 
     fn load_transducer(model_path: &Path, config: &Config) -> Result<Self> {
@@ -142,44 +148,37 @@ impl SttEngine {
         };
         let tokens = model_path.join("tokens.txt");
 
-        let recognizer = sherpa_rs::transducer::TransducerRecognizer::new(
-            sherpa_rs::transducer::TransducerConfig {
-                encoder: encoder.to_string_lossy().into(),
-                decoder: decoder.to_string_lossy().into(),
-                joiner: joiner.to_string_lossy().into(),
-                tokens: tokens.to_string_lossy().into(),
-                provider: Some(detect_provider()),
-                num_threads: config.num_threads.max(1),
-                sample_rate: config.sample_rate as i32,
-                feature_dim: 80,
-                decoding_method: "greedy_search".to_string(),
-                model_type: "nemo_transducer".to_string(),
-                debug: config.debug,
-                ..Default::default()
-            },
-        )
-        .map_err(|e| anyhow::anyhow!("creating Transducer recognizer: {}", e))?;
+        let mut recognizer_config = sherpa_onnx::OfflineRecognizerConfig::default();
+        recognizer_config.model_config.transducer = sherpa_onnx::OfflineTransducerModelConfig {
+            encoder: Some(encoder.to_string_lossy().into()),
+            decoder: Some(decoder.to_string_lossy().into()),
+            joiner: Some(joiner.to_string_lossy().into()),
+            ..Default::default()
+        };
+        recognizer_config.model_config.tokens = Some(tokens.to_string_lossy().into());
+        recognizer_config.model_config.provider = Some(detect_provider());
+        recognizer_config.model_config.num_threads = config.num_threads.max(1);
+        recognizer_config.decoding_method = Some("greedy_search".into());
 
-        Ok(SttEngine::Transducer(recognizer))
+        let recognizer = sherpa_onnx::OfflineRecognizer::create(&recognizer_config)
+            .ok_or_else(|| anyhow::anyhow!("creating Transducer recognizer failed"))?;
+
+        Ok(SttEngine { recognizer })
     }
 
     pub fn transcribe(&mut self, samples: &[f32], sample_rate: u32) -> Result<String> {
-        match self {
-            SttEngine::Moonshine(r) => {
-                let result = r.transcribe(sample_rate, samples);
-                Ok(result.text)
-            }
-            SttEngine::Transducer(r) => {
-                let text = r.transcribe(sample_rate, samples);
-                Ok(text)
-            }
-        }
+        let stream = self.recognizer.create_stream();
+        stream.accept_waveform(sample_rate as i32, samples);
+        self.recognizer.decode(&stream);
+        let result = stream
+            .get_result()
+            .ok_or_else(|| anyhow::anyhow!("getting transcription result failed"))?;
+        Ok(result.text)
     }
 }
 
 /// Detect whether CUDA is available for ONNX Runtime.
 fn detect_provider() -> String {
-    // Check if nvidia-smi works and if onnxruntime-cuda is installed.
     let has_nvidia = std::process::Command::new("nvidia-smi")
         .arg("-L")
         .output()
@@ -202,7 +201,7 @@ fn detect_provider() -> String {
 }
 
 pub async fn download_model(cache_dir: &Path, model_path: &Path) -> Result<()> {
-    let parakeet_dir = cache_dir.join("models/parakeet-tdt-0.6b-v2-int8");
+    let parakeet_dir = cache_dir.join("models/parakeet-tdt-0.6b-v3-int8");
     let moonshine_dir = cache_dir.join("models/moonshine-tiny-en-int8");
 
     // Explicit Moonshine opt-in via filename.
@@ -219,13 +218,13 @@ pub async fn download_model(cache_dir: &Path, model_path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Default to Parakeet-TDT-0.6B-v2 int8 (more accurate; ~630 MB total).
+    // Default to Parakeet-TDT-0.6B-v3 int8 — multilingual (25 European languages), ~670 MB total.
     let has_encoder = parakeet_dir.join("encoder.int8.onnx").exists();
     let has_decoder = parakeet_dir.join("decoder.int8.onnx").exists();
     let has_joiner = parakeet_dir.join("joiner.int8.onnx").exists();
     let has_tokens = parakeet_dir.join("tokens.txt").exists();
     if !(has_encoder && has_decoder && has_joiner && has_tokens) {
-        info!("Downloading Parakeet-TDT-0.6B-v2 (int8)...");
+        info!("Downloading Parakeet-TDT-0.6B-v3 (int8, multilingual)...");
         return download_parakeet(&parakeet_dir).await;
     }
     info!("Parakeet model already exists at {:?}", parakeet_dir);
@@ -283,7 +282,6 @@ async fn download_model_files(
             repo, revision, f.name
         );
         if let Err(e) = download_file_with_resume(&url, &dest, f).await {
-            // Clean up partial download so the next run retries from scratch.
             let part = part_path(&dest);
             let _ = std::fs::remove_file(part);
             return Err(e);
@@ -325,7 +323,7 @@ fn verify_file(path: &Path, expected: &ModelFile) -> Result<()> {
             path,
             expected.sha256,
             got
-        );
+        )
     }
     Ok(())
 }
@@ -341,7 +339,6 @@ async fn download_file_with_resume(url: &str, dest: &Path, expected: &ModelFile)
         0
     };
 
-    // If the partial is already larger than expected, it's corrupt — start over.
     let existing_size = if existing_size > expected.size {
         let _ = std::fs::remove_file(&part);
         0
@@ -362,13 +359,10 @@ async fn download_file_with_resume(url: &str, dest: &Path, expected: &ModelFile)
     let mut response = request.send().await?;
     let status = response.status();
 
-    // 206 Partial Content = resumed successfully
-    // 200 OK             = server didn't honor Range; start fresh
     if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
         anyhow::bail!("Failed to download {}: {}", url, status);
     }
 
-    // If the server ignored our Range header, truncate any existing partial.
     let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT;
     let mut downloaded = if resumed { existing_size } else { 0 };
 
@@ -398,7 +392,6 @@ async fn download_file_with_resume(url: &str, dest: &Path, expected: &ModelFile)
     }
     progress.finish_and_clear();
 
-    // Verify on the part file before promoting it to its final name.
     verify_file(&part, expected)
         .with_context(|| format!("verifying downloaded {}", expected.name))?;
 

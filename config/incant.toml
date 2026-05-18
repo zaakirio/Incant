@@ -2,7 +2,7 @@
 # Config location: ~/.config/incant/config.toml
 
 # Path to the ONNX model directory.
-# If not set, defaults to ~/.cache/incant/models/parakeet-tdt-0.6b-v2-int8
+# If not set, defaults to ~/.cache/incant/models/parakeet-tdt-0.6b-v3-int8
 # (Parakeet-TDT-0.6B-v2, more accurate, ~630 MB). To use the smaller Moonshine
 # model instead, set the path so its basename contains "moonshine":
 # model_path = "/home/USER/.cache/incant/models/moonshine-tiny-en-int8"

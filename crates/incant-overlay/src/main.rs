@@ -49,14 +49,21 @@ fn main() {
         let window = gtk4::ApplicationWindow::new(app);
         window.init_layer_shell();
         window.set_layer(Layer::Overlay);
-        // Do NOT anchor to all edges — we want a small floating capsule, not a fullscreen window.
-        window.set_default_size(400, 120);
+        // Anchor to the top edge so the capsule sits just below the status bar
+        // rather than dead-center on the screen. We span the full width and
+        // center the capsule horizontally inside the layer-shell surface.
+        window.set_anchor(gtk4_layer_shell::Edge::Top, true);
+        window.set_anchor(gtk4_layer_shell::Edge::Left, true);
+        window.set_anchor(gtk4_layer_shell::Edge::Right, true);
+        // Small top margin to clear a typical Waybar (~32 px) with a little breathing room.
+        window.set_margin(gtk4_layer_shell::Edge::Top, 44);
+        window.set_default_size(400, 40);
         window.set_decorated(false);
 
         // Capsule container
         let capsule = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
         capsule.set_halign(gtk4::Align::Center);
-        capsule.set_valign(gtk4::Align::Center);
+        capsule.set_valign(gtk4::Align::Start);
         capsule.set_widget_name("incant-capsule");
 
         // Inner glow / meter bar
@@ -141,11 +148,14 @@ fn update_ui(capsule: &gtk4::Box, meter_bar: &gtk4::Box, state: &DaemonState) {
         }
         Status::Recording => {
             capsule.add_css_class("recording");
-            let avg = state.meter.average_power.clamp(0.0, 1.0);
-            let peak = state.meter.peak_power.clamp(0.0, 1.0);
-            let width = 16.0 + (peak * 40.0); // 16px to 56px
+            // Speech RMS / peak typically sits in 0.02–0.3, so scale the
+            // signal aggressively (and gamma-curve it) for a lively meter.
+            let avg = (state.meter.average_power * 4.0).clamp(0.0, 1.0).powf(0.6);
+            let peak = (state.meter.peak_power * 2.5).clamp(0.0, 1.0).powf(0.6);
+            let width = 16.0 + (peak * 80.0); // 16px to 96px
             meter_bar.set_size_request(width as i32, -1);
-            meter_bar.set_opacity(avg as f64);
+            // Keep the bar visible at all times, just modulate its opacity.
+            meter_bar.set_opacity((0.35 + 0.65 * avg as f64).clamp(0.35, 1.0));
         }
         Status::Transcribing => {
             capsule.add_css_class("transcribing");

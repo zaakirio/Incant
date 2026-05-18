@@ -36,6 +36,19 @@ pub struct Config {
     #[serde(default = "default_minimum_key_time_ms")]
     pub minimum_key_time_ms: u64,
 
+    /// Maximum time in milliseconds to stay in Preparing state waiting for
+    /// audio energy. After this we promote to Recording regardless.
+    #[serde(default = "default_max_preparing_duration_ms")]
+    pub max_preparing_duration_ms: u64,
+
+    /// Peak audio power threshold for promoting from Preparing → Recording.
+    /// Only used in single-press (non double-tap-only) mode. If the mic peak
+    /// power stays below this after minimum_key_time_ms, the overlay stays
+    /// hidden until speech is detected or max_preparing_duration_ms elapses.
+    /// This prevents modifier+key combos (Alt-Tab, etc.) from flashing the HUD.
+    #[serde(default = "default_promotion_peak_threshold")]
+    pub promotion_peak_threshold: f32,
+
     /// Enable double-tap to lock recording mode.
     #[serde(default = "default_true")]
     pub double_tap_lock_enabled: bool,
@@ -45,9 +58,10 @@ pub struct Config {
     pub double_tap_window_ms: u64,
 
     /// Use double-tap only (no press-and-hold).
-    /// Defaults to true so that Alt+<anykey> combos (Alt-Tab, Alt-F4, etc.)
-    /// never trigger a recording — only an explicit double-tap does.
-    #[serde(default = "default_true")]
+    /// When true, a single press does nothing; you must tap twice quickly to
+    /// start locked recording. This eliminates all modifier-combo false
+    /// positives at the cost of the natural hold-to-record feel.
+    #[serde(default = "default_false")]
     pub use_double_tap_only: bool,
 
     /// Sound effect volume (0.0 - 1.0).
@@ -68,9 +82,11 @@ impl Default for Config {
             num_threads: 0,
             debug: false,
             minimum_key_time_ms: default_minimum_key_time_ms(),
+            max_preparing_duration_ms: default_max_preparing_duration_ms(),
+            promotion_peak_threshold: default_promotion_peak_threshold(),
             double_tap_lock_enabled: true,
             double_tap_window_ms: default_double_tap_window_ms(),
-            use_double_tap_only: true,
+            use_double_tap_only: false,
             sound_volume: default_sound_volume(),
         }
     }
@@ -104,7 +120,7 @@ impl Config {
 fn default_model_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("~/.cache"))
-        .join("incant/models/parakeet-tdt-0.6b-v2-int8")
+        .join("incant/models/parakeet-tdt-0.6b-v3-int8")
 }
 
 fn default_sample_rate() -> u32 {
@@ -140,8 +156,20 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 fn default_minimum_key_time_ms() -> u64 {
     150
+}
+
+fn default_max_preparing_duration_ms() -> u64 {
+    2000
+}
+
+fn default_promotion_peak_threshold() -> f32 {
+    0.02
 }
 
 fn default_double_tap_window_ms() -> u64 {

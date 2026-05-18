@@ -208,8 +208,8 @@ fn check_model() -> Check {
         .join("incant/models");
 
     let candidates = [
-        "parakeet-tdt-0.6b-v2-int8",
         "parakeet-tdt-0.6b-v3-int8",
+        "parakeet-tdt-0.6b-v2-int8",
         "moonshine-tiny-en-int8",
     ];
 

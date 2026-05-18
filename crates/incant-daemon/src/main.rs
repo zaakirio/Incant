@@ -163,18 +163,30 @@ async fn main() -> Result<()> {
     });
 
     // Spawn audio meter calculation loop.
+    //
+    // We compute RMS + peak over only the most recent ~100 ms of samples so the
+    // meter stays lively for the entire recording. Averaging over the full
+    // rolling buffer makes the values flatten out within a few seconds, which
+    // produces a "static" looking bar.
     let meter_state = app_state.clone();
+    let meter_window_samples = (native_sample_rate as usize / 10).max(1); // ~100 ms
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(33));
         loop {
             interval.tick().await;
             if meter_state.is_recording() {
-                let buf = meter_state.audio_buffer.lock().unwrap().clone();
+                let buf = meter_state.audio_buffer.lock().unwrap();
                 let len = buf.len();
                 if len > 0 {
-                    let avg_power = buf.iter().map(|s| s * s).sum::<f32>() / len as f32;
-                    let peak_power = buf.iter().map(|s| s * s).fold(0.0f32, f32::max);
-                    meter_state.set_meter(avg_power.sqrt(), peak_power.sqrt());
+                    let start = len.saturating_sub(meter_window_samples);
+                    let window = &buf[start..];
+                    let wlen = window.len();
+                    let sum_sq: f32 = window.iter().map(|s| s * s).sum();
+                    let peak_sq = window.iter().map(|s| s * s).fold(0.0f32, f32::max);
+                    let avg_power = (sum_sq / wlen as f32).sqrt();
+                    let peak_power = peak_sq.sqrt();
+                    drop(buf);
+                    meter_state.set_meter(avg_power, peak_power);
                 }
             }
         }
@@ -272,8 +284,10 @@ async fn state_machine_loop(
         let is_recording = state.is_recording();
         let current_status = *state.status.lock().unwrap();
 
-        // Promote Preparing -> Recording after the minimum hold time.
-        // This prevents quick modifier taps (e.g. Alt-Tab) from flashing the HUD.
+        // Promote Preparing -> Recording after the minimum hold time,
+        // but only if there's actual audio energy (or we've waited long enough).
+        // This prevents modifier+key combos (Alt-Tab, etc.) from flashing the HUD
+        // when no speech is present.
         if current_status == Status::Preparing && is_recording {
             let elapsed = state
                 .recording_start
@@ -281,14 +295,31 @@ async fn state_machine_loop(
                 .unwrap()
                 .map(|s| s.elapsed())
                 .unwrap_or(Duration::ZERO);
-            if elapsed >= Duration::from_millis(config.minimum_key_time_ms) {
-                state.set_status(Status::Recording);
-                info!(
-                    "Promoted to Recording after {:.3}s hold",
-                    elapsed.as_secs_f32()
-                );
-                if let Some(ref s) = sounds {
-                    s.play(Effect::Start, config.sound_volume);
+            let min_duration = Duration::from_millis(config.minimum_key_time_ms);
+            let max_prepare = Duration::from_millis(config.max_preparing_duration_ms);
+
+            if elapsed >= min_duration {
+                let meter = state.meter.lock().unwrap();
+                let has_audio = meter.peak_power >= config.promotion_peak_threshold;
+                let maxed_out = elapsed >= max_prepare;
+
+                if has_audio || maxed_out {
+                    state.set_status(Status::Recording);
+                    if has_audio {
+                        info!(
+                            "Promoted to Recording after {:.3}s hold (peak={:.3})",
+                            elapsed.as_secs_f32(),
+                            meter.peak_power
+                        );
+                    } else {
+                        info!(
+                            "Promoted to Recording after {:.3}s hold (max preparing duration reached)",
+                            elapsed.as_secs_f32()
+                        );
+                    }
+                    if let Some(ref s) = sounds {
+                        s.play(Effect::Start, config.sound_volume);
+                    }
                 }
             }
         }

@@ -26,8 +26,8 @@ toml = { workspace = true }
 cpal = "0.15"
 hound = "3.5"
 
-# STT
-sherpa-rs = { version = "0.6.8", features = ["download-binaries"] }
+# STT (official upstream crate — replaces deprecated sherpa-rs)
+sherpa-onnx = "1.13.2"
 
 # IPC - using tokio Unix sockets directly
 
