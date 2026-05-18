@@ -32,7 +32,12 @@ struct DaemonState {
 
 #[derive(Debug, Clone, Deserialize)]
 struct Response {
+    // `ok` and `message` are deserialized for completeness but the overlay
+    // only consumes the `state` payload; keep them present so the wire
+    // format stays in sync with `incant-daemon::protocol::Response`.
+    #[allow(dead_code)]
     ok: bool,
+    #[allow(dead_code)]
     message: String,
     state: Option<DaemonState>,
 }
@@ -76,7 +81,10 @@ fn main() {
         // Shared state
         let state: Arc<Mutex<DaemonState>> = Arc::new(Mutex::new(DaemonState {
             status: Status::Hidden,
-            meter: Meter { average_power: 0.0, peak_power: 0.0 },
+            meter: Meter {
+                average_power: 0.0,
+                peak_power: 0.0,
+            },
             message: None,
         }));
 
@@ -99,11 +107,17 @@ fn main() {
 }
 
 fn update_ui(capsule: &gtk4::Box, meter_bar: &gtk4::Box, state: &DaemonState) {
-    let ctx = capsule.style_context();
-
-    // Remove all status classes
-    for class in &["hidden", "preparing", "recording", "transcribing", "prewarming", "error"] {
-        ctx.remove_class(class);
+    // Remove all status classes (GTK4: `add_css_class`/`remove_css_class`
+    // directly on the widget; `style_context()` was deprecated in 4.10).
+    for class in &[
+        "hidden",
+        "preparing",
+        "recording",
+        "transcribing",
+        "prewarming",
+        "error",
+    ] {
+        capsule.remove_css_class(class);
     }
 
     // Clean up any previous error label to avoid leaking widgets
@@ -118,27 +132,27 @@ fn update_ui(capsule: &gtk4::Box, meter_bar: &gtk4::Box, state: &DaemonState) {
 
     match state.status {
         Status::Hidden => {
-            ctx.add_class("hidden");
+            capsule.add_css_class("hidden");
         }
         Status::Preparing => {
-            ctx.add_class("preparing");
+            capsule.add_css_class("preparing");
         }
         Status::Recording => {
-            ctx.add_class("recording");
-            let avg = state.meter.average_power.min(1.0).max(0.0);
-            let peak = state.meter.peak_power.min(1.0).max(0.0);
+            capsule.add_css_class("recording");
+            let avg = state.meter.average_power.clamp(0.0, 1.0);
+            let peak = state.meter.peak_power.clamp(0.0, 1.0);
             let width = 16.0 + (peak * 40.0); // 16px to 56px
             meter_bar.set_size_request(width as i32, -1);
             meter_bar.set_opacity(avg as f64);
         }
         Status::Transcribing => {
-            ctx.add_class("transcribing");
+            capsule.add_css_class("transcribing");
         }
         Status::Prewarming => {
-            ctx.add_class("prewarming");
+            capsule.add_css_class("prewarming");
         }
         Status::Error => {
-            ctx.add_class("error");
+            capsule.add_css_class("error");
             if let Some(ref msg) = state.message {
                 let label = gtk4::Label::new(Some(msg));
                 label.set_widget_name("incant-error-label");

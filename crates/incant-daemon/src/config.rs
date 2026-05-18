@@ -45,7 +45,9 @@ pub struct Config {
     pub double_tap_window_ms: u64,
 
     /// Use double-tap only (no press-and-hold).
-    #[serde(default)]
+    /// Defaults to true so that Alt+<anykey> combos (Alt-Tab, Alt-F4, etc.)
+    /// never trigger a recording — only an explicit double-tap does.
+    #[serde(default = "default_true")]
     pub use_double_tap_only: bool,
 
     /// Sound effect volume (0.0 - 1.0).
@@ -68,7 +70,7 @@ impl Default for Config {
             minimum_key_time_ms: default_minimum_key_time_ms(),
             double_tap_lock_enabled: true,
             double_tap_window_ms: default_double_tap_window_ms(),
-            use_double_tap_only: false,
+            use_double_tap_only: true,
             sound_volume: default_sound_volume(),
         }
     }
@@ -102,7 +104,7 @@ impl Config {
 fn default_model_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("~/.cache"))
-        .join("incant/models/moonshine-tiny-en-int8")
+        .join("incant/models/parakeet-tdt-0.6b-v2-int8")
 }
 
 fn default_sample_rate() -> u32 {

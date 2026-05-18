@@ -84,23 +84,33 @@ sudo install -Dm755 target/release/incant-overlay /usr/local/bin/incant-overlay
 ok "Binaries installed"
 
 # ── Sherpa shared libraries ──
+# We install them to /usr/local/lib/incant so the daemon's RUNPATH
+# ($ORIGIN/../lib/incant) finds them automatically. No /etc/ld.so.conf.d
+# entry or LD_LIBRARY_PATH override is needed.
 info "Installing Sherpa-ONNX shared libraries..."
 SHERPA_LIB=$(find "$HOME/.cache/sherpa-rs" -name "libsherpa-onnx-c-api.so" -path "*/lib/*" | head -1 | xargs dirname 2>/dev/null)
 if [ -n "$SHERPA_LIB" ] && [ -d "$SHERPA_LIB" ]; then
-    sudo install -dm755 /usr/lib/incant
-    sudo install -Dm644 "$SHERPA_LIB"/libsherpa-onnx-c-api.so   /usr/lib/incant/
-    sudo install -Dm644 "$SHERPA_LIB"/libsherpa-onnx-cxx-api.so /usr/lib/incant/
-    sudo install -Dm644 "$SHERPA_LIB"/libonnxruntime.so          /usr/lib/incant/
-    echo "/usr/lib/incant" | sudo tee /etc/ld.so.conf.d/incant.conf >/dev/null
-    sudo ldconfig
-    ok "Sherpa libraries installed to /usr/lib/incant"
+    sudo install -dm755 /usr/local/lib/incant
+    sudo install -Dm644 "$SHERPA_LIB"/libsherpa-onnx-c-api.so   /usr/local/lib/incant/
+    sudo install -Dm644 "$SHERPA_LIB"/libsherpa-onnx-cxx-api.so /usr/local/lib/incant/
+    sudo install -Dm644 "$SHERPA_LIB"/libonnxruntime.so          /usr/local/lib/incant/
+    # Clean up any older install layout from previous installer versions.
+    if [ -f /etc/ld.so.conf.d/incant.conf ]; then
+        info "Removing legacy /etc/ld.so.conf.d/incant.conf (no longer needed)"
+        sudo rm -f /etc/ld.so.conf.d/incant.conf
+        sudo ldconfig
+    fi
+    ok "Sherpa libraries installed to /usr/local/lib/incant"
 else
     warn "Could not find Sherpa-ONNX libraries in ~/.cache/sherpa-rs"
     warn "    The daemon may fail to start. Try rebuilding: cargo build --release"
 fi
 
 # ── Download model ──
-info "Downloading STT model (~630 MB)..."
+# Ensure freshly-installed binaries are reachable even if /usr/local/bin
+# was not in PATH when this shell started.
+export PATH="/usr/local/bin:${PATH}"
+info "Downloading STT model (~660 MB, SHA-256 verified)..."
 if ! incant-daemon download-model; then
     warn "Model download failed."
     warn "    You can retry later with: incant-daemon download-model"

@@ -9,7 +9,7 @@ fn test_default_config() {
     assert_eq!(config.minimum_key_time_ms, 150);
     assert!(config.double_tap_lock_enabled);
     assert_eq!(config.double_tap_window_ms, 300);
-    assert!(!config.use_double_tap_only);
+    assert!(config.use_double_tap_only);
     assert!(!config.debug);
 }
 

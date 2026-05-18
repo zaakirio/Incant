@@ -8,11 +8,11 @@ pub struct SoundEffects {
 }
 
 impl SoundEffects {
-    pub fn new(volume: f32) -> Option<Self> {
+    pub fn new(_volume: f32) -> Option<Self> {
         let (tx, rx) = channel::<(Effect, f32)>();
 
         std::thread::spawn(move || {
-            let (stream, stream_handle) = OutputStream::try_default().ok()?;
+            let (_stream, stream_handle) = OutputStream::try_default().ok()?;
             let sink = Sink::try_new(&stream_handle).ok()?;
 
             let start_sound = generate_beep(880.0, 0.08);
@@ -54,6 +54,10 @@ pub enum Effect {
     Start,
     Stop,
     Paste,
+    /// Cancel cue; emitted when the user aborts an in-flight recording.
+    /// Kept in the enum for symmetry with `Cancel` IPC commands even though
+    /// no caller currently triggers it.
+    #[allow(dead_code)]
     Cancel,
 }
 

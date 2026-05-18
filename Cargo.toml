@@ -8,7 +8,7 @@ edition = "2021"
 rust-version = "1.80"
 authors = ["Zaakir <zaakir@omarchy.org>"]
 license = "MIT"
-repository = "https://github.com/zaakirio/keystroke"
+repository = "https://github.com/zaakirio/Incant"
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

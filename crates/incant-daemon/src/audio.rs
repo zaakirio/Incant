@@ -19,7 +19,10 @@ pub fn start_capture(
         .default_input_device()
         .context("no default input device found")?;
 
-    info!("Using audio input device: {}", device.name().unwrap_or_default());
+    info!(
+        "Using audio input device: {}",
+        device.name().unwrap_or_default()
+    );
 
     let mut supported_configs = device
         .supported_input_configs()
@@ -32,7 +35,8 @@ pub fn start_capture(
             let min_sr = config_range.min_sample_rate().0;
             let max_sr = config_range.max_sample_rate().0;
             if target_sample_rate >= min_sr && target_sample_rate <= max_sr {
-                chosen_config = Some(config_range.with_sample_rate(cpal::SampleRate(target_sample_rate)));
+                chosen_config =
+                    Some(config_range.with_sample_rate(cpal::SampleRate(target_sample_rate)));
                 break;
             }
         }
@@ -58,27 +62,13 @@ pub fn start_capture(
     let channels = config.channels();
 
     let stream = match config.sample_format() {
-        SampleFormat::F32 => build_stream::<f32>(
-            &device,
-            &config.into(),
-            recording,
-            tx,
-            channels,
-        ),
-        SampleFormat::I16 => build_stream::<i16>(
-            &device,
-            &config.into(),
-            recording,
-            tx.clone(),
-            channels,
-        ),
-        SampleFormat::U16 => build_stream::<u16>(
-            &device,
-            &config.into(),
-            recording,
-            tx.clone(),
-            channels,
-        ),
+        SampleFormat::F32 => build_stream::<f32>(&device, &config.into(), recording, tx, channels),
+        SampleFormat::I16 => {
+            build_stream::<i16>(&device, &config.into(), recording, tx.clone(), channels)
+        }
+        SampleFormat::U16 => {
+            build_stream::<u16>(&device, &config.into(), recording, tx.clone(), channels)
+        }
         _ => {
             anyhow::bail!("unsupported sample format: {:?}", config.sample_format());
         }
@@ -149,9 +139,8 @@ pub fn resample_once(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<
         oversampling_factor: 128,
         window: WindowFunction::BlackmanHarris2,
     };
-    let mut resampler =
-        SincFixedIn::new(ratio, ratio * 1.2, params, chunk_size, 1)
-            .context("creating sinc resampler")?;
+    let mut resampler = SincFixedIn::new(ratio, ratio * 1.2, params, chunk_size, 1)
+        .context("creating sinc resampler")?;
 
     let mut output = Vec::with_capacity((input.len() as f64 * ratio) as usize);
     let mut pos = 0;
@@ -187,7 +176,7 @@ pub fn save_wav(path: &std::path::Path, samples: &[f32], sample_rate: u32) -> Re
     };
     let mut writer = WavWriter::create(path, spec).context("create wav file")?;
     for sample in samples {
-        let clipped = sample.max(-1.0).min(1.0);
+        let clipped = sample.clamp(-1.0, 1.0);
         let int_sample = (clipped * i16::MAX as f32) as i16;
         writer.write_sample(int_sample)?;
     }

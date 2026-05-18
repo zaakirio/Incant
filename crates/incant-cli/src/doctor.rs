@@ -45,9 +45,18 @@ pub async fn run() -> Result<()> {
     // ── Daemon health ──
     checks.push(check_daemon_reachable().await);
 
-    let _pass = checks.iter().filter(|c| c.result == CheckResult::Pass).count();
-    let warn = checks.iter().filter(|c| c.result == CheckResult::Warn).count();
-    let fail = checks.iter().filter(|c| c.result == CheckResult::Fail).count();
+    let _pass = checks
+        .iter()
+        .filter(|c| c.result == CheckResult::Pass)
+        .count();
+    let warn = checks
+        .iter()
+        .filter(|c| c.result == CheckResult::Warn)
+        .count();
+    let fail = checks
+        .iter()
+        .filter(|c| c.result == CheckResult::Fail)
+        .count();
 
     for check in &checks {
         print_check(check);
@@ -56,8 +65,12 @@ pub async fn run() -> Result<()> {
     println!();
     match (fail, warn) {
         (0, 0) => println!("  ✅ All checks passed. Incant is ready!\n"),
-        (0, w) => println!("  ⚠️  {w} warning(s). Incant will work, but some features may be limited.\n"),
-        (f, _) => println!("  ❌ {f} check(s) failed. Please fix the issues above and run again.\n"),
+        (0, w) => {
+            println!("  ⚠️  {w} warning(s). Incant will work, but some features may be limited.\n")
+        }
+        (f, _) => {
+            println!("  ❌ {f} check(s) failed. Please fix the issues above and run again.\n")
+        }
     }
 
     if fail > 0 {
@@ -98,7 +111,9 @@ fn check_hyprland() -> Check {
             name: "Window manager".into(),
             result: CheckResult::Warn,
             message: "Hyprland not detected".into(),
-            fix: Some("Incant is designed for Hyprland. Other compositors may work partially.".into()),
+            fix: Some(
+                "Incant is designed for Hyprland. Other compositors may work partially.".into(),
+            ),
         }
     }
 }
@@ -182,7 +197,7 @@ fn check_binary(name: &str, required: bool) -> Check {
             name: name.to_string(),
             result: CheckResult::Warn,
             message: "not found in PATH (optional)".into(),
-            fix: Some(format!("Install {name} if you want this fallback.")) ,
+            fix: Some(format!("Install {name} if you want this fallback.")),
         }
     }
 }
@@ -200,7 +215,12 @@ fn check_model() -> Check {
 
     for &cand in &candidates {
         let path = cache_dir.join(cand);
-        if path.is_dir() && path.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false) {
+        if path.is_dir()
+            && path
+                .read_dir()
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false)
+        {
             return Check {
                 name: "STT model".into(),
                 result: CheckResult::Pass,
@@ -269,7 +289,10 @@ fn check_sherpa_libs() -> Check {
         return Check {
             name: "Sherpa-ONNX libraries".into(),
             result: CheckResult::Warn,
-            message: format!("found at {} — set LD_LIBRARY_PATH", lib.parent().unwrap().display()),
+            message: format!(
+                "found at {} — set LD_LIBRARY_PATH",
+                lib.parent().unwrap().display()
+            ),
             fix: Some("Run with: LD_LIBRARY_PATH=~/.cache/sherpa-rs/.../lib incant-daemon".into()),
         };
     }
@@ -288,15 +311,13 @@ fn check_socket_path() -> Check {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("incant");
 
-    if !socket_dir.exists() {
-        if std::fs::create_dir_all(&socket_dir).is_ok() {
-            return Check {
-                name: "Socket directory".into(),
-                result: CheckResult::Pass,
-                message: format!("writable at {}", socket_dir.display()),
-                fix: None,
-            };
-        }
+    if !socket_dir.exists() && std::fs::create_dir_all(&socket_dir).is_ok() {
+        return Check {
+            name: "Socket directory".into(),
+            result: CheckResult::Pass,
+            message: format!("writable at {}", socket_dir.display()),
+            fix: None,
+        };
     }
 
     let test = socket_dir.join(".write_test");
@@ -341,9 +362,7 @@ async fn check_daemon_reachable() -> Check {
     };
 
     let ping = r#"{"cmd":"ping"}"#;
-    if stream.write_all(ping.as_bytes()).await.is_err()
-        || stream.write_all(b"\n").await.is_err()
-    {
+    if stream.write_all(ping.as_bytes()).await.is_err() || stream.write_all(b"\n").await.is_err() {
         return Check {
             name: "Daemon health".into(),
             result: CheckResult::Fail,

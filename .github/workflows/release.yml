@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            use_cross: false
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            use_cross: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            pkg-config \
+            libgtk-4-dev \
+            libgtk4-layer-shell-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libpulse-dev \
+            libssl-dev
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: Build (native)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --locked --workspace --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --locked --workspace --target ${{ matrix.target }}
+
+      - name: Assemble release tarball
+        id: pack
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          DIST="incant-${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/${DIST}"/{bin,lib/incant}
+
+          # Binaries
+          for bin in incant incant-daemon incant-overlay; do
+            cp "target/${{ matrix.target }}/release/${bin}" "dist/${DIST}/bin/"
+          done
+
+          # Sherpa-onnx shared libs (downloaded by sherpa-rs into ~/.cache during build).
+          # The daemon's RUNPATH includes $ORIGIN/../lib/incant, so placing them here
+          # makes the tarball self-contained — no LD_LIBRARY_PATH needed.
+          SHERPA_LIB_DIR="$(find "$HOME/.cache/sherpa-rs" -type d -name lib -path '*/sherpa-onnx-*' | head -1 || true)"
+          if [ -z "$SHERPA_LIB_DIR" ]; then
+            echo "ERROR: sherpa-onnx libs not found under ~/.cache/sherpa-rs" >&2
+            exit 1
+          fi
+          cp "$SHERPA_LIB_DIR"/libsherpa-onnx-c-api.so   "dist/${DIST}/lib/incant/"
+          cp "$SHERPA_LIB_DIR"/libsherpa-onnx-cxx-api.so "dist/${DIST}/lib/incant/"
+          cp "$SHERPA_LIB_DIR"/libonnxruntime.so          "dist/${DIST}/lib/incant/"
+
+          # Docs + sample configs
+          cp README.md LICENSE                 "dist/${DIST}/"
+          cp -r config hyprland systemd        "dist/${DIST}/"
+
+          tar -C dist -czf "dist/${DIST}.tar.gz" "${DIST}"
+          (cd dist && sha256sum "${DIST}.tar.gz" > "${DIST}.tar.gz.sha256")
+
+          echo "tarball=dist/${DIST}.tar.gz"   >> "$GITHUB_OUTPUT"
+          echo "checksum=dist/${DIST}.tar.gz.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: incant-${{ matrix.target }}
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.checksum }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp -v {} release/ \;
+          ls -lh release/
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

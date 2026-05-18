@@ -12,7 +12,7 @@ mod tests;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use protocol::{Command, Response, Status};
+use protocol::Status;
 use sound::{Effect, SoundEffects};
 use state::AppState;
 use std::path::PathBuf;
@@ -53,13 +53,10 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    match cli.command {
-        Some(Commands::DownloadModel) => {
-            info!("Downloading model...");
-            stt::download_model(&config.cache_dir, &config.model_path).await?;
-            return Ok(());
-        }
-        _ => {}
+    if let Some(Commands::DownloadModel) = cli.command {
+        info!("Downloading model...");
+        stt::download_model(&config.cache_dir, &config.model_path).await?;
+        return Ok(());
     }
 
     info!("incant-daemon starting");
@@ -80,11 +77,9 @@ async fn main() -> Result<()> {
     }
 
     // Initialize STT engine.
-    let stt_engine = Arc::new(
-        std::sync::Mutex::new(
-            stt::SttEngine::new(&config).context("initializing STT engine")?,
-        )
-    );
+    let stt_engine = Arc::new(std::sync::Mutex::new(
+        stt::SttEngine::new(&config).context("initializing STT engine")?,
+    ));
 
     // State broadcast channel for overlay/clients.
     let (state_tx, _state_rx) = broadcast::channel::<protocol::DaemonState>(16);
@@ -98,17 +93,15 @@ async fn main() -> Result<()> {
     let mut overlay_child: Option<tokio::process::Child> = None;
     if config.show_overlay {
         match find_overlay_binary() {
-            Some(overlay_path) => {
-                match tokio::process::Command::new(&overlay_path).spawn() {
-                    Ok(child) => {
-                        info!("Overlay spawned: {:?}", overlay_path);
-                        overlay_child = Some(child);
-                    }
-                    Err(e) => {
-                        warn!("Failed to spawn overlay at {:?}: {}", overlay_path, e);
-                    }
+            Some(overlay_path) => match tokio::process::Command::new(&overlay_path).spawn() {
+                Ok(child) => {
+                    info!("Overlay spawned: {:?}", overlay_path);
+                    overlay_child = Some(child);
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to spawn overlay at {:?}: {}", overlay_path, e);
+                }
+            },
             None => {
                 warn!("incant-overlay not found in PATH or next to incant-daemon");
             }
@@ -155,12 +148,9 @@ async fn main() -> Result<()> {
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(1024);
 
     // Start audio capture stream.
-    let (_audio_stream, native_sample_rate) = audio::start_capture(
-        app_state.recording.clone(),
-        audio_tx,
-        config.sample_rate,
-    )
-    .context("starting audio capture")?;
+    let (_audio_stream, native_sample_rate) =
+        audio::start_capture(app_state.recording.clone(), audio_tx, config.sample_rate)
+            .context("starting audio capture")?;
     info!("Audio capture started (native {} Hz)", native_sample_rate);
 
     // Drain audio chunks from the real-time callback into AppState.
@@ -257,16 +247,11 @@ async fn state_machine_loop(
     sounds: Option<SoundEffects>,
     native_sample_rate: u32,
 ) {
-    use tokio::sync::mpsc;
-
-    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
-
-    // Store the command sender in a static-ish way for IPC handlers to use.
-    // We'll use a simple approach: IPC handlers directly call into this loop
-    // by sending commands through the channel.
-    //
-    // For now, the IPC handler modifies AppState directly and this loop polls.
-    // This is a simplified version; a full implementation would use the channel.
+    // The IPC handler modifies AppState directly; this loop polls the state
+    // and drives the audio capture / STT / injection pipeline accordingly.
+    // (A future refactor could replace this with a tokio::sync::mpsc channel
+    // carrying typed commands, but the polled-state approach is sufficient
+    // given how rarely state transitions actually fire.)
 
     let mut was_recording = false;
     let mut error_clear_time: Option<Instant> = None;
@@ -289,19 +274,30 @@ async fn state_machine_loop(
         // Promote Preparing -> Recording after the minimum hold time.
         // This prevents quick modifier taps (e.g. Alt-Tab) from flashing the HUD.
         if current_status == Status::Preparing && is_recording {
-            let elapsed = state.recording_start.lock().unwrap()
+            let elapsed = state
+                .recording_start
+                .lock()
+                .unwrap()
                 .map(|s| s.elapsed())
                 .unwrap_or(Duration::ZERO);
             if elapsed >= Duration::from_millis(config.minimum_key_time_ms) {
                 state.set_status(Status::Recording);
-                info!("Promoted to Recording after {:.3}s hold", elapsed.as_secs_f32());
-                if let Some(ref s) = sounds { s.play(Effect::Start, config.sound_volume); }
+                info!(
+                    "Promoted to Recording after {:.3}s hold",
+                    elapsed.as_secs_f32()
+                );
+                if let Some(ref s) = sounds {
+                    s.play(Effect::Start, config.sound_volume);
+                }
             }
         }
 
         // Detect release transition: recording -> stop.
         if was_recording && !is_recording {
-            let duration = state.recording_start.lock().unwrap()
+            let duration = state
+                .recording_start
+                .lock()
+                .unwrap()
                 .and_then(|s| Some(s.elapsed()))
                 .unwrap_or(Duration::ZERO);
 
@@ -312,7 +308,11 @@ async fn state_machine_loop(
 
             if duration < min_duration {
                 // Quick tap: silently discard without HUD flash or cancel sound.
-                info!("Quick tap discarded ({:.3}s < {:.3}s)", duration.as_secs_f32(), min_duration.as_secs_f32());
+                info!(
+                    "Quick tap discarded ({:.3}s < {:.3}s)",
+                    duration.as_secs_f32(),
+                    min_duration.as_secs_f32()
+                );
                 state.set_status(Status::Hidden);
                 state.clear_audio();
                 was_recording = false;
@@ -322,10 +322,17 @@ async fn state_machine_loop(
             // Proceed to transcription.
             info!("Recording stopped, starting transcription...");
             state.set_status(Status::Transcribing);
-            if let Some(ref s) = sounds { s.play(Effect::Stop, config.sound_volume); }
+            if let Some(ref s) = sounds {
+                s.play(Effect::Stop, config.sound_volume);
+            }
 
             let audio = state.take_audio();
-            info!("Captured {} samples native @ {} Hz (~{:.1}s)", audio.len(), native_sample_rate, audio.len() as f32 / native_sample_rate as f32);
+            info!(
+                "Captured {} samples native @ {} Hz (~{:.1}s)",
+                audio.len(),
+                native_sample_rate,
+                audio.len() as f32 / native_sample_rate as f32
+            );
 
             if audio.is_empty() {
                 warn!("No audio captured");
@@ -383,7 +390,9 @@ async fn state_machine_loop(
                             state.set_status(Status::Error);
                             error_clear_time = Some(Instant::now());
                         } else {
-                            if let Some(ref s) = sounds { s.play(Effect::Paste, config.sound_volume); }
+                            if let Some(ref s) = sounds {
+                                s.play(Effect::Paste, config.sound_volume);
+                            }
                             state.set_status(Status::Hidden);
                         }
                     } else {

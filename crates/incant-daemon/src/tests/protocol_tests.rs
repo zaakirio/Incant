@@ -1,4 +1,4 @@
-use crate::protocol::{Command, Response, Status, Meter, DaemonState};
+use crate::protocol::{Command, DaemonState, Meter, Response, Status};
 
 #[test]
 fn test_command_serde() {
@@ -22,7 +22,10 @@ fn test_command_serde() {
 fn test_response_serde() {
     let resp = Response::ok("test").with_state(DaemonState {
         status: Status::Recording,
-        meter: Meter { average_power: 0.5, peak_power: 0.8 },
+        meter: Meter {
+            average_power: 0.5,
+            peak_power: 0.8,
+        },
         message: None,
     });
 

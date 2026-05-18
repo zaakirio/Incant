@@ -1,8 +1,77 @@
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use indicatif::{ProgressBar, ProgressStyle};
+use sha2::{Digest, Sha256};
+use std::path::Path;
+use tracing::info;
 
 use crate::config::Config;
+
+/// A single model file we know how to download and verify.
+struct ModelFile {
+    name: &'static str,
+    /// Hex-encoded SHA-256 of the file content.
+    sha256: &'static str,
+    /// Expected size in bytes.
+    size: u64,
+}
+
+/// Parakeet TDT 0.6B v2 INT8 — pinned to a specific HuggingFace commit so the
+/// integrity of the bits we load into ONNX Runtime is not at the mercy of a
+/// moving `main` branch.
+const PARAKEET_REPO: &str = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
+const PARAKEET_REVISION: &str = "1ab9323565ddb038682214b292f588070a538ce2";
+const PARAKEET_FILES: &[ModelFile] = &[
+    ModelFile {
+        name: "encoder.int8.onnx",
+        sha256: "a32b12d17bbbc309d0686fbbcc2987b5e9b8333a7da83fa6b089f0a2acd651ab",
+        size: 652_184_296,
+    },
+    ModelFile {
+        name: "decoder.int8.onnx",
+        sha256: "b6bb64963457237b900e496ee9994b59294526439fbcc1fecf705b31a15c6b4e",
+        size: 7_257_753,
+    },
+    ModelFile {
+        name: "joiner.int8.onnx",
+        sha256: "7946164367946e7f9f29a122407c3252b680dbae9a51343eb2488d057c3c43d2",
+        size: 1_739_080,
+    },
+    ModelFile {
+        name: "tokens.txt",
+        sha256: "ec182b70dd42113aff6c5372c75cac58c952443eb22322f57bbd7f53977d497d",
+        size: 9_384,
+    },
+];
+
+const MOONSHINE_REPO: &str = "csukuangfj/sherpa-onnx-moonshine-tiny-en-int8";
+const MOONSHINE_REVISION: &str = "bf2b762c076d8ea61e2af0b3851c9564fb77552e";
+const MOONSHINE_FILES: &[ModelFile] = &[
+    ModelFile {
+        name: "preprocess.onnx",
+        sha256: "f33addce61a143460fe753b5ee5b7db255e5140b5b779c065b94f6c83ff0bf4e",
+        size: 6_800_738,
+    },
+    ModelFile {
+        name: "encode.int8.onnx",
+        sha256: "8774dfba578de027ec6595c2c654a0836434489bc963a0db124a7f181f571acb",
+        size: 18_249_187,
+    },
+    ModelFile {
+        name: "cached_decode.int8.onnx",
+        sha256: "2aff28bba6a03d8dcf5c9feac45462629bae37317442299f28115ad09da773f6",
+        size: 45_264_830,
+    },
+    ModelFile {
+        name: "uncached_decode.int8.onnx",
+        sha256: "216737000dd5881a17aa043f6bbd286add33e4c3b0ae257153e2ec15438bdc41",
+        size: 53_216_096,
+    },
+    ModelFile {
+        name: "tokens.txt",
+        sha256: "1165c2aeb9f72f457a83be2d459a09054f27490acd9b41bd43794dfd25e296ea",
+        size: 436_688,
+    },
+];
 
 pub enum SttEngine {
     Moonshine(sherpa_rs::moonshine::MoonshineRecognizer),
@@ -13,13 +82,14 @@ impl SttEngine {
     pub fn new(config: &Config) -> Result<Self> {
         let model_path = &config.model_path;
 
-        if model_path.join("preprocess.onnx").exists() || model_path.join("preprocess.int8.onnx").exists() {
+        if model_path.join("preprocess.onnx").exists()
+            || model_path.join("preprocess.int8.onnx").exists()
+        {
             info!("Loading Moonshine model from {:?}", model_path);
             return Self::load_moonshine(model_path, config);
         }
 
-        if model_path.join("encoder.onnx").exists()
-            || model_path.join("encoder.int8.onnx").exists()
+        if model_path.join("encoder.onnx").exists() || model_path.join("encoder.int8.onnx").exists()
         {
             info!("Loading Transducer (Parakeet) model from {:?}", model_path);
             return Self::load_transducer(model_path, config);
@@ -38,8 +108,8 @@ impl SttEngine {
         let uncached_decoder = model_path.join("uncached_decode.int8.onnx");
         let tokens = model_path.join("tokens.txt");
 
-        let recognizer = sherpa_rs::moonshine::MoonshineRecognizer::new(
-            sherpa_rs::moonshine::MoonshineConfig {
+        let recognizer =
+            sherpa_rs::moonshine::MoonshineRecognizer::new(sherpa_rs::moonshine::MoonshineConfig {
                 preprocessor: preprocessor.to_string_lossy().into(),
                 encoder: encoder.to_string_lossy().into(),
                 cached_decoder: cached_decoder.to_string_lossy().into(),
@@ -48,9 +118,8 @@ impl SttEngine {
                 provider: Some(detect_provider()),
                 num_threads: Some(config.num_threads.max(1)),
                 debug: config.debug,
-            },
-        )
-        .map_err(|e| anyhow::anyhow!("creating Moonshine recognizer: {}", e))?;
+            })
+            .map_err(|e| anyhow::anyhow!("creating Moonshine recognizer: {}", e))?;
 
         Ok(SttEngine::Moonshine(recognizer))
     }
@@ -136,156 +205,208 @@ pub async fn download_model(cache_dir: &Path, model_path: &Path) -> Result<()> {
     let parakeet_dir = cache_dir.join("models/parakeet-tdt-0.6b-v2-int8");
     let moonshine_dir = cache_dir.join("models/moonshine-tiny-en-int8");
 
-    // Download the model that matches the expected path.
-    if model_path.file_name().map(|n| n.to_string_lossy().contains("parakeet")).unwrap_or(false) {
-        if !parakeet_dir.join("encoder.onnx").exists() && !parakeet_dir.join("encoder.int8.onnx").exists() {
-            info!("Downloading Parakeet-TDT-0.6B-v2...");
-            return download_parakeet(&parakeet_dir).await;
+    // Explicit Moonshine opt-in via filename.
+    if model_path
+        .file_name()
+        .map(|n| n.to_string_lossy().contains("moonshine"))
+        .unwrap_or(false)
+    {
+        if !moonshine_dir.join("preprocess.onnx").exists() {
+            info!("Downloading Moonshine Tiny...");
+            return download_moonshine(&moonshine_dir).await;
         }
-        info!("Parakeet model already exists at {:?}", parakeet_dir);
+        info!("Moonshine model already exists at {:?}", moonshine_dir);
         return Ok(());
     }
 
-    // Default to Moonshine (smaller, faster, works with current sherpa-onnx).
-    if !moonshine_dir.join("preprocess.onnx").exists() {
-        info!("Downloading Moonshine Tiny...");
-        return download_moonshine(&moonshine_dir).await;
+    // Default to Parakeet-TDT-0.6B-v2 int8 (more accurate; ~630 MB total).
+    let has_encoder = parakeet_dir.join("encoder.int8.onnx").exists();
+    let has_decoder = parakeet_dir.join("decoder.int8.onnx").exists();
+    let has_joiner = parakeet_dir.join("joiner.int8.onnx").exists();
+    let has_tokens = parakeet_dir.join("tokens.txt").exists();
+    if !(has_encoder && has_decoder && has_joiner && has_tokens) {
+        info!("Downloading Parakeet-TDT-0.6B-v2 (int8)...");
+        return download_parakeet(&parakeet_dir).await;
     }
-    info!("Moonshine model already exists at {:?}", moonshine_dir);
+    info!("Parakeet model already exists at {:?}", parakeet_dir);
     Ok(())
 }
 
 async fn download_parakeet(model_dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(model_dir)?;
-
-    let base_url = "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2/resolve/main";
-    let files = vec![
-        "encoder.onnx",
-        "decoder.onnx",
-        "joiner.onnx",
-        "tokens.txt",
-    ];
-
-    for file in &files {
-        let dest = model_dir.join(file);
-        if dest.exists() {
-            info!("{} already exists, skipping", file);
-            continue;
-        }
-        let url = format!("{}/{}", base_url, file);
-        if let Err(e) = download_file_with_resume(&url, &dest).await {
-            // Clean up partial download so the next run retries.
-            let part = dest.with_file_name(format!("{}.__part__", dest.file_name().unwrap_or_default().to_string_lossy()));
-            let _ = std::fs::remove_file(part);
-            return Err(e);
-        }
-    }
-
+    download_model_files(model_dir, PARAKEET_REPO, PARAKEET_REVISION, PARAKEET_FILES).await?;
     info!("Parakeet model downloaded to {:?}", model_dir);
     Ok(())
 }
 
 async fn download_moonshine(model_dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(model_dir)?;
+    download_model_files(
+        model_dir,
+        MOONSHINE_REPO,
+        MOONSHINE_REVISION,
+        MOONSHINE_FILES,
+    )
+    .await?;
+    info!("Moonshine model downloaded to {:?}", model_dir);
+    Ok(())
+}
 
-    let base_url = "https://huggingface.co/csukuangfj/sherpa-onnx-moonshine-tiny-en-int8/resolve/main";
-    let files = vec![
-        "preprocess.onnx",
-        "encode.int8.onnx",
-        "cached_decode.int8.onnx",
-        "uncached_decode.int8.onnx",
-        "tokens.txt",
-    ];
+/// Download every file in `files` from a pinned HuggingFace revision, verifying
+/// SHA-256 and size after each transfer. Existing files matching the expected
+/// hash are kept; mismatches are deleted and re-downloaded.
+async fn download_model_files(
+    model_dir: &Path,
+    repo: &str,
+    revision: &str,
+    files: &[ModelFile],
+) -> Result<()> {
+    std::fs::create_dir_all(model_dir)
+        .with_context(|| format!("creating model dir {:?}", model_dir))?;
 
-    for file in &files {
-        let dest = model_dir.join(file);
+    for f in files {
+        let dest = model_dir.join(f.name);
+
         if dest.exists() {
-            info!("{} already exists, skipping", file);
-            continue;
+            match verify_file(&dest, f) {
+                Ok(()) => {
+                    info!("{} present and verified, skipping", f.name);
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!("{} failed verification ({}); re-downloading", f.name, e);
+                    let _ = std::fs::remove_file(&dest);
+                }
+            }
         }
-        let url = format!("{}/{}", base_url, file);
-        if let Err(e) = download_file_with_resume(&url, &dest).await {
-            let part = dest.with_file_name(format!("{}.__part__", dest.file_name().unwrap_or_default().to_string_lossy()));
+
+        let url = format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            repo, revision, f.name
+        );
+        if let Err(e) = download_file_with_resume(&url, &dest, f).await {
+            // Clean up partial download so the next run retries from scratch.
+            let part = part_path(&dest);
             let _ = std::fs::remove_file(part);
             return Err(e);
         }
     }
 
-    info!("Moonshine model downloaded to {:?}", model_dir);
     Ok(())
 }
 
-/// Download a file with resume support via HTTP Range requests.
-/// Writes to `dest.__part__` and atomically renames to `dest` on success.
-async fn download_file_with_resume(url: &str, dest: &Path) -> Result<()> {
-    let part_path = dest.with_file_name(format!(
+fn part_path(dest: &Path) -> std::path::PathBuf {
+    dest.with_file_name(format!(
         "{}.__part__",
         dest.file_name().unwrap_or_default().to_string_lossy()
-    ));
+    ))
+}
 
-    let existing_size = if part_path.exists() {
-        part_path.metadata()?.len()
+/// SHA-256 the file at `path` and confirm it matches `expected`.
+fn verify_file(path: &Path, expected: &ModelFile) -> Result<()> {
+    let meta = std::fs::metadata(path).with_context(|| format!("stat {:?}", path))?;
+    if meta.len() != expected.size {
+        anyhow::bail!(
+            "size mismatch for {:?}: expected {} bytes, got {}",
+            path,
+            expected.size,
+            meta.len()
+        );
+    }
+
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("opening {:?} for checksum", path))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)
+        .with_context(|| format!("reading {:?} for checksum", path))?;
+    let got = hex::encode(hasher.finalize());
+
+    if got != expected.sha256 {
+        anyhow::bail!(
+            "sha256 mismatch for {:?}: expected {}, got {}",
+            path,
+            expected.sha256,
+            got
+        );
+    }
+    Ok(())
+}
+
+/// Download a file with resume support via HTTP Range requests. Writes to
+/// `dest.__part__`, verifies SHA-256 + size, then atomically renames to `dest`.
+async fn download_file_with_resume(url: &str, dest: &Path, expected: &ModelFile) -> Result<()> {
+    let part = part_path(dest);
+
+    let existing_size = if part.exists() {
+        part.metadata()?.len()
     } else {
         0
+    };
+
+    // If the partial is already larger than expected, it's corrupt — start over.
+    let existing_size = if existing_size > expected.size {
+        let _ = std::fs::remove_file(&part);
+        0
+    } else {
+        existing_size
     };
 
     let client = reqwest::Client::new();
     let mut request = client.get(url);
 
     if existing_size > 0 {
-        info!("Resuming {} from {} bytes", url, existing_size);
+        info!("Resuming {} from {} bytes", expected.name, existing_size);
         request = request.header("Range", format!("bytes={}-", existing_size));
     } else {
-        info!("Downloading {} ...", url);
+        info!("Downloading {} ...", expected.name);
     }
 
     let mut response = request.send().await?;
     let status = response.status();
 
     // 206 Partial Content = resumed successfully
-    // 200 OK = server doesn't support Range, starting from scratch
+    // 200 OK             = server didn't honor Range; start fresh
     if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
         anyhow::bail!("Failed to download {}: {}", url, status);
     }
 
-    let total_size = response
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
+    // If the server ignored our Range header, truncate any existing partial.
+    let resumed = status == reqwest::StatusCode::PARTIAL_CONTENT;
+    let mut downloaded = if resumed { existing_size } else { 0 };
+
+    let progress = ProgressBar::new(expected.size);
+    progress.set_style(
+        ProgressStyle::with_template(
+            "  {msg:<28} [{bar:30.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    progress.set_message(expected.name.to_string());
+    progress.set_position(downloaded);
 
     let mut file = std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
-        .open(&part_path)
-        .with_context(|| format!("opening part file {:?}", part_path))?;
-
-    let mut downloaded = existing_size;
-    let mut last_report = std::time::Instant::now();
+        .truncate(!resumed)
+        .append(resumed)
+        .write(true)
+        .open(&part)
+        .with_context(|| format!("opening part file {:?}", part))?;
 
     while let Some(chunk) = response.chunk().await? {
         std::io::Write::write_all(&mut file, &chunk)?;
         downloaded += chunk.len() as u64;
-
-        if last_report.elapsed() > std::time::Duration::from_secs(3) {
-            let fname = dest.file_name().unwrap_or_default().to_string_lossy();
-            match total_size {
-                Some(total) => {
-                    let pct = (downloaded as f64 / total as f64) * 100.0;
-                    info!("{}: {:.1}% ({}/{} bytes)", fname, pct, downloaded, total);
-                }
-                None => {
-                    info!("{}: {} bytes downloaded", fname, downloaded);
-                }
-            }
-            last_report = std::time::Instant::now();
-        }
+        progress.set_position(downloaded);
     }
+    progress.finish_and_clear();
 
-    // Rename part file to final destination.
-    std::fs::rename(&part_path, dest)
-        .with_context(|| format!("renaming {:?} to {:?}", part_path, dest))?;
+    // Verify on the part file before promoting it to its final name.
+    verify_file(&part, expected)
+        .with_context(|| format!("verifying downloaded {}", expected.name))?;
 
-    info!("Downloaded {} ({} bytes)", dest.file_name().unwrap_or_default().to_string_lossy(), downloaded);
+    std::fs::rename(&part, dest).with_context(|| format!("renaming {:?} to {:?}", part, dest))?;
+
+    info!(
+        "Downloaded and verified {} ({} bytes)",
+        expected.name, downloaded
+    );
     Ok(())
 }

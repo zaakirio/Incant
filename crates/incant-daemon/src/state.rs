@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -69,14 +69,29 @@ impl AppState {
         self.reset_meter();
     }
 
+    /// Stop recording and return how long it ran. Kept as part of the public
+    /// `AppState` surface even though the current state machine clears the
+    /// recording flag inline (see `ipc::process_command`); future refactors
+    /// should route through this method so `recording_start` is properly
+    /// cleared in one place.
+    #[allow(dead_code)]
     pub fn stop_recording(&self) -> Option<Duration> {
         self.recording.store(false, Ordering::SeqCst);
         self.locked_mode.store(false, Ordering::SeqCst);
-        self.recording_start.lock().unwrap().take().map(|start| start.elapsed())
+        self.recording_start
+            .lock()
+            .unwrap()
+            .take()
+            .map(|start| start.elapsed())
     }
 
+    #[allow(dead_code)]
     pub fn recording_duration(&self) -> Option<Duration> {
-        self.recording_start.lock().unwrap().as_ref().map(|s| s.elapsed())
+        self.recording_start
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.elapsed())
     }
 
     pub fn is_locked(&self) -> bool {
@@ -88,7 +103,11 @@ impl AppState {
     }
 
     pub fn last_press_elapsed(&self) -> Option<Duration> {
-        self.last_press_time.lock().unwrap().as_ref().map(|t| t.elapsed())
+        self.last_press_time
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.elapsed())
     }
 
     pub fn record_press(&self) {
@@ -111,6 +130,7 @@ impl AppState {
         *self.last_result.lock().unwrap() = Some(text);
     }
 
+    #[allow(dead_code)]
     pub fn take_result(&self) -> Option<String> {
         self.last_result.lock().unwrap().take()
     }

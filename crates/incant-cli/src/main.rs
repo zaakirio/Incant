@@ -91,7 +91,10 @@ async fn main() -> Result<()> {
         info!("OK: {}", response.message);
         if let Some(ref state) = response.state {
             println!("Status: {}", state.status);
-            println!("Meter: avg={:.3} peak={:.3}", state.meter.average_power, state.meter.peak_power);
+            println!(
+                "Meter: avg={:.3} peak={:.3}",
+                state.meter.average_power, state.meter.peak_power
+            );
             if let Some(ref msg) = state.message {
                 println!("Message: {}", msg);
             }

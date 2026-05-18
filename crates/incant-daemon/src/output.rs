@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::process::Command;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 /// Type text into the focused window using the best available method.
 pub fn type_text(text: &str, methods: &[String]) -> Result<()> {
@@ -65,10 +65,7 @@ fn try_dotool(text: &str) -> Result<()> {
         .spawn()
         .context("spawning dotool")?;
 
-    let stdin = child
-        .stdin
-        .take()
-        .context("getting dotool stdin")?;
+    let stdin = child.stdin.take().context("getting dotool stdin")?;
 
     let escaped = text.replace('"', "\\\"");
     let cmd = format!("type \"{}\"\n", escaped);
@@ -92,10 +89,7 @@ fn try_wl_copy(text: &str) -> Result<()> {
         .spawn()
         .context("spawning wl-copy")?;
 
-    let stdin = child
-        .stdin
-        .take()
-        .context("getting wl-copy stdin")?;
+    let stdin = child.stdin.take().context("getting wl-copy stdin")?;
 
     let text = text.to_string();
     std::thread::spawn(move || {
