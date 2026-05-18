@@ -27,7 +27,7 @@ Incant is a local-first voice dictation daemon for **Omarchy** (Arch Linux + Hyp
 - **Double-tap lock mode** — tap the hotkey twice in quick succession to enter hands-free recording; tap once more to finish.
 - **Live recording overlay** — a centered GTK4 layer-shell capsule with an animated audio meter shows recording state.
 - **Procedural sound effects** — distinct start, stop, paste, and cancel tones, generated at runtime (no sample files).
-- **Parakeet-TDT 0.6B** — NVIDIA's state-of-the-art ASR (6.34 % WER, 25 languages); Moonshine Tiny is also supported.
+- **Moonshine Tiny** — fast local ASR (~120 MB, English); Parakeet-TDT 0.6B is also supported.
 - **Resilient text injection** — `wtype` (Wayland virtual keyboard) with `dotool` and `wl-copy` fallbacks.
 - **Fully local** — model weights live in `~/.cache/incant`; no audio or text ever leaves your machine.
 
@@ -46,6 +46,18 @@ Incant is a local-first voice dictation daemon for **Omarchy** (Arch Linux + Hyp
 ### Arch Linux (PKGBUILD)
 
 A `PKGBUILD` is provided for building and installing as a regular Arch package:
+
+### Quick install (recommended)
+
+```bash
+git clone https://github.com/zaakirio/incant.git
+cd incant
+./install.sh
+```
+
+The installer will detect your system, install dependencies, build, download the model, and run diagnostics.
+
+### Manual install
 
 ```bash
 git clone https://github.com/zaakirio/incant.git
@@ -74,11 +86,9 @@ sudo install -Dm755 target/release/incant         /usr/local/bin/incant
 sudo install -Dm755 target/release/incant-overlay /usr/local/bin/incant-overlay
 ```
 
-**3. Download the speech model** (~630 MB)
+**3. Download the speech model** (~120 MB, auto-downloaded on first run)
 
 ```bash
-incant-daemon download-model
-```
 
 **4. Wire up Hyprland**
 
@@ -98,6 +108,9 @@ source = ~/.config/hypr/incant.conf
 cp systemd/incant-daemon.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now incant-daemon
+
+# Verify everything is working
+incant doctor
 ```
 
 ## Usage
@@ -118,6 +131,7 @@ incant release   # Stop recording and transcribe
 incant cancel    # Cancel an in-progress recording or transcription
 incant status    # Print the current daemon state
 incant ping      # Health check
+incant doctor    # Run diagnostic checks
 ```
 
 ## Configuration
@@ -126,8 +140,10 @@ Incant looks for its configuration at `~/.config/incant/config.toml`, which is c
 
 ```toml
 # Path to the ONNX model directory.
-# Defaults to ~/.cache/incant/models/parakeet-tdt-0.6b-v2-int8
-# model_path = "/home/you/.cache/incant/models/parakeet-tdt-0.6b-v2-int8"
+# Defaults to ~/.cache/incant/models/moonshine-tiny-en-int8
+# Moonshine Tiny (~120 MB, English) is the default.
+# Parakeet-TDT-0.6B-v2 is also supported (~630 MB, 25 languages).
+# model_path = "/home/you/.cache/incant/models/moonshine-tiny-en-int8"
 
 # Sample rate expected by the model. Do not change unless you know why.
 sample_rate = 16000

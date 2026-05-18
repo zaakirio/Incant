@@ -1,5 +1,5 @@
 use gtk4::prelude::*;
-use gtk4_layer_shell::{Edge, Layer, LayerShell};
+use gtk4_layer_shell::{Layer, LayerShell};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
@@ -44,11 +44,9 @@ fn main() {
         let window = gtk4::ApplicationWindow::new(app);
         window.init_layer_shell();
         window.set_layer(Layer::Overlay);
-        window.set_anchor(Edge::Top, true);
-        window.set_anchor(Edge::Left, true);
-        window.set_anchor(Edge::Right, true);
-        window.set_anchor(Edge::Bottom, true);
-        window.set_default_size(1, 1);
+        // Do NOT anchor to all edges — we want a small floating capsule, not a fullscreen window.
+        window.set_default_size(400, 120);
+        window.set_decorated(false);
 
         // Capsule container
         let capsule = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
@@ -64,7 +62,7 @@ fn main() {
         capsule.append(&meter_bar);
         window.set_child(Some(&capsule));
 
-        // CSS provider
+        // CSS provider — make window background transparent so we never paint a grey screen.
         let provider = gtk4::CssProvider::new();
         provider.load_from_string(CSS);
         gtk4::style_context_add_provider_for_display(
@@ -82,7 +80,7 @@ fn main() {
             message: None,
         }));
 
-        // Spawn IPC listener
+        // IPC listener — exits if daemon is gone for too long.
         let state_clone = state.clone();
         std::thread::spawn(move || {
             ipc_listener(state_clone);
@@ -106,6 +104,16 @@ fn update_ui(capsule: &gtk4::Box, meter_bar: &gtk4::Box, state: &DaemonState) {
     // Remove all status classes
     for class in &["hidden", "preparing", "recording", "transcribing", "prewarming", "error"] {
         ctx.remove_class(class);
+    }
+
+    // Clean up any previous error label to avoid leaking widgets
+    let mut child = capsule.first_child();
+    while let Some(c) = child {
+        let next = c.next_sibling();
+        if c.widget_name() == "incant-error-label" {
+            capsule.remove(&c);
+        }
+        child = next;
     }
 
     match state.status {
@@ -132,7 +140,6 @@ fn update_ui(capsule: &gtk4::Box, meter_bar: &gtk4::Box, state: &DaemonState) {
         Status::Error => {
             ctx.add_class("error");
             if let Some(ref msg) = state.message {
-                // Create a tooltip label
                 let label = gtk4::Label::new(Some(msg));
                 label.set_widget_name("incant-error-label");
                 label.set_halign(gtk4::Align::Center);
@@ -149,8 +156,11 @@ fn ipc_listener(state: Arc<Mutex<DaemonState>>) {
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join("incant/daemon.sock");
 
+    let mut consecutive_failures = 0;
+
     loop {
         if let Ok(stream) = UnixStream::connect(&socket_path) {
+            consecutive_failures = 0;
             let reader = BufReader::new(stream);
             for line in reader.lines() {
                 if let Ok(line) = line {
@@ -161,12 +171,23 @@ fn ipc_listener(state: Arc<Mutex<DaemonState>>) {
                     }
                 }
             }
+            // Connection dropped — daemon may have restarted. Keep trying briefly.
+        }
+
+        consecutive_failures += 1;
+        if consecutive_failures > 10 {
+            eprintln!("incant-overlay: daemon unreachable for 5s, exiting.");
+            std::process::exit(0);
         }
         std::thread::sleep(Duration::from_millis(500));
     }
 }
 
 const CSS: &str = r#"
+window {
+    background: transparent;
+}
+
 #incant-capsule {
     min-width: 16px;
     min-height: 16px;

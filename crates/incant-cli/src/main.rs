@@ -1,3 +1,5 @@
+mod doctor;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -28,6 +30,8 @@ enum Commands {
     Status,
     /// Ping the daemon.
     Ping,
+    /// Run diagnostic checks.
+    Doctor,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +82,7 @@ async fn main() -> Result<()> {
         Commands::Cancel => IpcCommand::Cancel,
         Commands::Status => IpcCommand::Status,
         Commands::Ping => IpcCommand::Ping,
+        Commands::Doctor => return doctor::run().await,
     };
 
     let response = send_command(&socket_path, &cmd).await?;

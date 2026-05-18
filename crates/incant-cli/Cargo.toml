@@ -19,4 +19,5 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = "6"
+which = "7"
 # IPC - using tokio Unix sockets directly

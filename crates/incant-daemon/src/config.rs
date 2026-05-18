@@ -102,7 +102,7 @@ impl Config {
 fn default_model_path() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("~/.cache"))
-        .join("incant/models/parakeet-tdt-0.6b-v3-int8")
+        .join("incant/models/moonshine-tiny-en-int8")
 }
 
 fn default_sample_rate() -> u32 {

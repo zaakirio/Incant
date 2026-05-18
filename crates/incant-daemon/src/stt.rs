@@ -132,27 +132,27 @@ fn detect_provider() -> String {
     }
 }
 
-pub async fn download_model(cache_dir: &Path) -> Result<()> {
-    let parakeet_dir = cache_dir.join("models/parakeet-tdt-0.6b-v3-int8");
+pub async fn download_model(cache_dir: &Path, model_path: &Path) -> Result<()> {
+    let parakeet_dir = cache_dir.join("models/parakeet-tdt-0.6b-v2-int8");
     let moonshine_dir = cache_dir.join("models/moonshine-tiny-en-int8");
 
-    // Try Parakeet first (user's preference).
-    if !parakeet_dir.join("encoder.onnx").exists() && !parakeet_dir.join("encoder.int8.onnx").exists() {
-        info!("Downloading Parakeet-TDT-0.6B-v2...");
-        if let Err(e) = download_parakeet(&parakeet_dir).await {
-            warn!("Parakeet download failed ({}), falling back to Moonshine", e);
-            return download_moonshine(&moonshine_dir).await;
+    // Download the model that matches the expected path.
+    if model_path.file_name().map(|n| n.to_string_lossy().contains("parakeet")).unwrap_or(false) {
+        if !parakeet_dir.join("encoder.onnx").exists() && !parakeet_dir.join("encoder.int8.onnx").exists() {
+            info!("Downloading Parakeet-TDT-0.6B-v2...");
+            return download_parakeet(&parakeet_dir).await;
         }
-        return Ok(());
-    }
-
-    // If Parakeet exists, we're done.
-    if parakeet_dir.join("encoder.onnx").exists() || parakeet_dir.join("encoder.int8.onnx").exists() {
         info!("Parakeet model already exists at {:?}", parakeet_dir);
         return Ok(());
     }
 
-    download_moonshine(&moonshine_dir).await
+    // Default to Moonshine (smaller, faster, works with current sherpa-onnx).
+    if !moonshine_dir.join("preprocess.onnx").exists() {
+        info!("Downloading Moonshine Tiny...");
+        return download_moonshine(&moonshine_dir).await;
+    }
+    info!("Moonshine model already exists at {:?}", moonshine_dir);
+    Ok(())
 }
 
 async fn download_parakeet(model_dir: &Path) -> Result<()> {

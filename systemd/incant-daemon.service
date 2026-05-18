@@ -4,7 +4,7 @@ After=pipewire.service
 
 [Service]
 Type=simple
-ExecStart=%h/.cargo/bin/incant-daemon
+ExecStart=/usr/local/bin/incant-daemon
 Restart=on-failure
 RestartSec=5
 Environment="RUST_LOG=incant_daemon=info"
