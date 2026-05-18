@@ -19,7 +19,11 @@ clap = { workspace = true }
 toml = { workspace = true }
 
 # Audio
-cpal = { version = "0.15", features = ["jack"] }
+# NOTE: deliberately NOT enabling cpal's `jack` feature. On Linux, cpal uses
+# ALSA by default; on PipeWire systems, ALSA is transparently routed through
+# pipewire-alsa. Enabling `jack` would pull libjack as a build-time dep for
+# zero runtime benefit on our target distros.
+cpal = "0.15"
 hound = "3.5"
 
 # STT

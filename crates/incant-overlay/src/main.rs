@@ -68,8 +68,10 @@ fn main() {
         window.set_child(Some(&capsule));
 
         // CSS provider — make window background transparent so we never paint a grey screen.
+        // `load_from_data` (not `load_from_string`) keeps us compatible with the GTK 4.6
+        // available on Ubuntu 22.04 LTS, which is what our release pipeline builds against.
         let provider = gtk4::CssProvider::new();
-        provider.load_from_string(CSS);
+        provider.load_from_data(CSS);
         gtk4::style_context_add_provider_for_display(
             &gtk4::gdk::Display::default().expect("no display"),
             &provider,

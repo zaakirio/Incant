@@ -24,7 +24,8 @@ use tracing::{error, info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "incant-daemon")]
-#[command(about = "Voice dictation daemon for Omarchy")]
+#[command(version)]
+#[command(about = "Voice dictation daemon for Hyprland / Wayland")]
 struct Cli {
     #[arg(short, long)]
     config: Option<PathBuf>,

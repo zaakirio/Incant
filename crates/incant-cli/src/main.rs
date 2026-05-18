@@ -10,7 +10,8 @@ use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(name = "incant")]
-#[command(about = "Voice dictation client for Omarchy")]
+#[command(version)]
+#[command(about = "Voice dictation client for Hyprland / Wayland")]
 struct Cli {
     #[arg(short, long)]
     socket: Option<PathBuf>,

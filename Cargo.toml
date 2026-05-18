@@ -3,7 +3,7 @@ members = ["crates/incant-daemon", "crates/incant-cli", "crates/incant-overlay"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.80"
 authors = ["Zaakir <zaakir@omarchy.org>"]

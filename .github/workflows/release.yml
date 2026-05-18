@@ -18,11 +18,20 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
+            # Pin to Ubuntu 22.04 (glibc 2.35) for portability.
+            # Building on ubuntu-latest (24.04, glibc 2.39) produces binaries
+            # that refuse to run on Debian 12 / RHEL 9 / Ubuntu 22.04 LTS.
+            # The smoke-test job enforces this with an explicit assertion.
+            runner: ubuntu-22.04
             use_cross: false
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
-            use_cross: true
+        # NOTE: aarch64-unknown-linux-gnu is intentionally NOT in this matrix.
+        # It requires either:
+        #   (a) a `cross` image with gtk4-layer-shell, GTK4, PipeWire, etc.
+        #       pre-installed in the sysroot (currently no upstream image does), or
+        #   (b) a Cross.toml `pre-build` step that installs the same source-built
+        #       gtk4-layer-shell into the cross container's sysroot.
+        # Neither path is in scope for v0.1.x. ARM users should build from source
+        # for now; we will re-add this target once (a) or (b) is solved.
 
     steps:
       - uses: actions/checkout@v4
@@ -36,30 +45,57 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Install host build dependencies
+        # gtk4-layer-shell is NOT packaged on Ubuntu 22.04 (or Ubuntu 24.04,
+        # or Debian stable). It only landed in Debian trixie / Ubuntu 25.04.
+        # We build it from source against the runner's GTK4 and bundle the
+        # resulting .so into the release tarball (via $ORIGIN/../lib/incant
+        # RUNPATH), so end users don't need it packaged on their distro either.
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
             cmake \
+            git \
+            ninja-build \
+            meson \
             pkg-config \
+            libclang-dev \
             libgtk-4-dev \
-            libgtk4-layer-shell-dev \
+            libwayland-dev \
+            gobject-introspection \
+            libgirepository1.0-dev \
             libasound2-dev \
             libpipewire-0.3-dev \
             libpulse-dev \
             libssl-dev
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: cargo install cross --locked --version 0.2.5
+      - name: Build and install gtk4-layer-shell from source
+        # Pin a tag for reproducibility. v1.0.x is the current stable line.
+        # Installing into /usr/local so pkg-config finds it via the default
+        # search path; libdir=lib (not lib/x86_64-linux-gnu) keeps the path
+        # stable regardless of multiarch layout.
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v1.0.4 \
+            https://github.com/wmww/gtk4-layer-shell.git /tmp/gtk4-layer-shell
+          cd /tmp/gtk4-layer-shell
+          meson setup build \
+            --prefix=/usr/local \
+            --libdir=lib \
+            -Dexamples=false \
+            -Ddocs=false \
+            -Dtests=false \
+            -Dintrospection=false \
+            -Dvapi=false
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+          # Sanity check: pkg-config must now find it.
+          pkg-config --modversion gtk4-layer-shell-0
 
-      - name: Build (native)
-        if: ${{ !matrix.use_cross }}
+      - name: Build
         run: cargo build --release --locked --workspace --target ${{ matrix.target }}
-
-      - name: Build (cross)
-        if: matrix.use_cross
-        run: cross build --release --locked --workspace --target ${{ matrix.target }}
 
       - name: Assemble release tarball
         id: pack
@@ -87,6 +123,13 @@ jobs:
           cp "$SHERPA_LIB_DIR"/libsherpa-onnx-cxx-api.so "dist/${DIST}/lib/incant/"
           cp "$SHERPA_LIB_DIR"/libonnxruntime.so          "dist/${DIST}/lib/incant/"
 
+          # gtk4-layer-shell .so (built from source in an earlier step,
+          # installed to /usr/local/lib). Bundle it so the tarball runs on
+          # distros that don't package gtk4-layer-shell (Debian stable,
+          # Ubuntu 22.04/24.04, RHEL/Rocky 9, older Fedora). Preserve symlinks
+          # so SONAME-based loading works at runtime.
+          cp -P /usr/local/lib/libgtk4-layer-shell.so*    "dist/${DIST}/lib/incant/"
+
           # Docs + sample configs
           cp README.md LICENSE                 "dist/${DIST}/"
           cp -r config hyprland systemd        "dist/${DIST}/"
@@ -106,9 +149,225 @@ jobs:
             ${{ steps.pack.outputs.checksum }}
           if-no-files-found: error
 
+  smoke-test:
+    name: Smoke-test ${{ matrix.target }}
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Only smoke-test the native x86_64 tarball — aarch64 needs
+          # qemu-user-static + multiarch libs, which we can add later.
+          - target: x86_64-unknown-linux-gnu
+    # Use a clean Debian image — NOT the Ubuntu runner — so we are exercising
+    # the tarball the way a real user would: against runtime libs only, on a
+    # different distro family than the one we built on.
+    container:
+      image: debian:stable-slim
+    steps:
+      - name: Install runtime dependencies only
+        # NOTE: only -runtime- packages here, no -dev packages, no Rust toolchain.
+        # If the tarball needs anything else to start, the smoke test should
+        # fail and we should fix the tarball, not this list.
+        #
+        # Deliberately NOT installing libgtk4-layer-shell0 — that package does
+        # not exist on Debian stable, and the whole reason we bundle the .so
+        # in lib/incant/ is so we don't need it. If the tarball ever requires
+        # the system to provide it, this smoke test will fail loudly.
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates \
+            file \
+            binutils \
+            libgtk-4-1 \
+            libasound2 \
+            libpipewire-0.3-0 \
+            libpulse0 \
+            libssl3
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: incant-${{ matrix.target }}
+          path: artifact
+
+      - name: Verify checksum
+        run: |
+          set -euo pipefail
+          cd artifact
+          sha256sum -c ./*.sha256
+
+      - name: Extract tarball
+        id: extract
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          tar -xzf artifact/*.tar.gz -C extracted
+          DIST_DIR="$(find extracted -maxdepth 1 -mindepth 1 -type d | head -1)"
+          echo "dist_dir=${DIST_DIR}" >> "$GITHUB_OUTPUT"
+          echo "Extracted tarball contents:"
+          find "${DIST_DIR}" -maxdepth 3 -type f | sort
+
+      - name: Verify tarball layout
+        run: |
+          set -euo pipefail
+          D="${{ steps.extract.outputs.dist_dir }}"
+          for f in \
+            bin/incant \
+            bin/incant-daemon \
+            bin/incant-overlay \
+            lib/incant/libsherpa-onnx-c-api.so \
+            lib/incant/libsherpa-onnx-cxx-api.so \
+            lib/incant/libonnxruntime.so \
+            README.md \
+            LICENSE \
+            config/incant.toml \
+            hyprland/incant.conf \
+            systemd/incant-daemon.service
+          do
+            test -f "$D/$f" || { echo "MISSING: $f"; exit 1; }
+          done
+          # gtk4-layer-shell ships as a SONAME-versioned symlink chain; check
+          # the SONAME the overlay was actually linked against is present.
+          test -e "$D/lib/incant/libgtk4-layer-shell.so.0" || {
+            echo "MISSING: lib/incant/libgtk4-layer-shell.so.0 (SONAME)"; exit 1;
+          }
+          echo "Tarball layout OK"
+
+      - name: Verify embedded RUNPATH
+        # The whole point of build.rs is that the installed binaries find
+        # their bundled libs via DT_RUNPATH, with no LD_LIBRARY_PATH and no
+        # /etc/ld.so.conf.d entry. If this regresses, every user-install
+        # path silently breaks. Check both the daemon (sherpa libs) and the
+        # overlay (gtk4-layer-shell).
+        run: |
+          set -euo pipefail
+          D="${{ steps.extract.outputs.dist_dir }}"
+          for bin in incant-daemon incant-overlay; do
+            RUNPATH="$(readelf -d "$D/bin/$bin" | awk '/RUNPATH|RPATH/ {print; exit}')"
+            echo "$bin RUNPATH entry: ${RUNPATH}"
+            echo "${RUNPATH}" | grep -F '$ORIGIN/../lib/incant' \
+              || { echo "ERROR: $bin is missing the expected RUNPATH"; exit 1; }
+          done
+
+      - name: Verify dynamic linker resolves bundled libs from the tarball
+        # ldd must report the bundled libs as resolved out of lib/incant/
+        # inside the extracted tarball, NOT out of any system path. If a
+        # future change accidentally drops the RUNPATH or moves the libs,
+        # this is where we catch it.
+        #
+        # We check two binaries:
+        #   - incant-daemon: must resolve sherpa-onnx + onnxruntime to lib/incant/
+        #   - incant-overlay: must resolve gtk4-layer-shell to lib/incant/
+        run: |
+          set -euo pipefail
+          D="${{ steps.extract.outputs.dist_dir }}"
+          # Resolve to absolute paths so we can match exactly.
+          EXPECTED_LIB_DIR="$(readlink -f "$D/lib/incant")"
+          echo "Expected lib dir: ${EXPECTED_LIB_DIR}"
+          echo ""
+
+          check_bundled () {
+            local bin="$1"; shift
+            echo "=== ldd $bin ==="
+            ldd "$D/bin/$bin" || true
+            echo ""
+
+            if ldd "$D/bin/$bin" | grep -E "not found"; then
+              echo "ERROR: $bin has unresolved shared libraries"
+              exit 1
+            fi
+
+            for lib in "$@"; do
+              resolved="$(ldd "$D/bin/$bin" | awk -v L="$lib" '$1 == L {print $3}')"
+              if [ -z "$resolved" ]; then
+                echo "ERROR: ${lib} not present in ldd output for $bin"
+                exit 1
+              fi
+              resolved_abs="$(readlink -f "$resolved")"
+              case "$resolved_abs" in
+                "$EXPECTED_LIB_DIR"/*)
+                  echo "OK ($bin):  ${lib} -> ${resolved_abs}"
+                  ;;
+                *)
+                  echo "ERROR: ${lib} resolved to ${resolved_abs}, expected under ${EXPECTED_LIB_DIR}"
+                  exit 1
+                  ;;
+              esac
+            done
+          }
+
+          check_bundled incant-daemon  libsherpa-onnx-c-api.so libonnxruntime.so
+          check_bundled incant-overlay libgtk4-layer-shell.so.0
+
+      - name: Smoke-test binaries
+        # We cannot start the daemon proper (no Wayland, no PipeWire, no
+        # microphone in the container) but every binary must at minimum
+        # link, load, parse args, and exit cleanly for --help / --version.
+        # This catches missing-symbol regressions, glibc-too-new mistakes,
+        # and "we forgot to bundle libX" bugs.
+        run: |
+          set -euo pipefail
+          D="${{ steps.extract.outputs.dist_dir }}"
+
+          "$D/bin/incant-daemon" --help | tee /tmp/daemon-help.txt
+          grep -q "Usage: incant-daemon"   /tmp/daemon-help.txt
+          grep -q "download-model"          /tmp/daemon-help.txt
+          "$D/bin/incant-daemon" --version | grep -E "incant-daemon [0-9]+\.[0-9]+\.[0-9]+"
+
+          "$D/bin/incant" --help | tee /tmp/cli-help.txt
+          grep -q "Usage: incant"           /tmp/cli-help.txt
+          grep -q "doctor"                  /tmp/cli-help.txt
+          "$D/bin/incant" --version | grep -E "incant [0-9]+\.[0-9]+\.[0-9]+"
+
+          "$D/bin/incant-overlay" --help | tee /tmp/overlay-help.txt
+
+      - name: Assert glibc compatibility ceiling
+        # If this assertion fails, the tarball will refuse to run on common
+        # LTS distros (Debian 12 = 2.36, RHEL/Rocky 9 = 2.34, Ubuntu 22.04 = 2.35).
+        # Bumping this number is a real compatibility decision — do not just
+        # raise it to make the test pass. The fix is almost always "downgrade
+        # the build runner", not "raise the ceiling".
+        run: |
+          set -euo pipefail
+          D="${{ steps.extract.outputs.dist_dir }}"
+          MAX_ALLOWED="2.35"
+          # Extract the highest GLIBC_x.y version this binary needs.
+          HIGHEST="$(objdump -T "$D/bin/incant-daemon" 2>/dev/null \
+            | grep -oE 'GLIBC_[0-9.]+' \
+            | sed 's/GLIBC_//' \
+            | sort -uV \
+            | tail -1)"
+          echo "Highest required glibc symbol: ${HIGHEST}"
+          echo "Maximum allowed:              ${MAX_ALLOWED}"
+          # `sort -V` puts the smaller version first; if HIGHEST > MAX_ALLOWED,
+          # the tail of a sorted pair is HIGHEST and it is not equal to MAX_ALLOWED.
+          if [ "$(printf '%s\n%s\n' "$HIGHEST" "$MAX_ALLOWED" | sort -V | tail -1)" != "$MAX_ALLOWED" ] \
+             && [ "$HIGHEST" != "$MAX_ALLOWED" ]; then
+            echo "ERROR: incant-daemon requires glibc ${HIGHEST}, ceiling is ${MAX_ALLOWED}."
+            echo "       This tarball will fail to run on Debian 12, RHEL/Rocky 9, Ubuntu 22.04."
+            echo "       Fix: build on an older runner (e.g. ubuntu-22.04), do not raise the ceiling."
+            exit 1
+          fi
+          echo "OK: tarball is compatible with glibc >= ${HIGHEST}"
+
+      - name: Show file metadata (diagnostic)
+        if: always()
+        run: |
+          set -e
+          D="${{ steps.extract.outputs.dist_dir }}"
+          file "$D"/bin/* "$D"/lib/incant/*
+          echo ""
+          echo "Glibc version requirements of the daemon:"
+          objdump -T "$D/bin/incant-daemon" 2>/dev/null \
+            | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -10 || true
+
   publish:
     name: Publish release
-    needs: build
+    needs: [build, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
