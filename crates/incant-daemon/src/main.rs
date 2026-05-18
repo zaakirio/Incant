@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::DownloadModel) => {
             info!("Downloading model...");
-            stt::download_model(&config.cache_dir).await?;
+            stt::download_model(&config.cache_dir, &config.model_path).await?;
             return Ok(());
         }
         _ => {}
@@ -76,12 +76,12 @@ async fn main() -> Result<()> {
     // Ensure model is available.
     if !config.model_path.exists() {
         warn!("Model not found at {:?}, downloading...", config.model_path);
-        stt::download_model(&config.cache_dir).await?;
+        stt::download_model(&config.cache_dir, &config.model_path).await?;
     }
 
     // Initialize STT engine.
     let stt_engine = Arc::new(
-        tokio::sync::Mutex::new(
+        std::sync::Mutex::new(
             stt::SttEngine::new(&config).context("initializing STT engine")?,
         )
     );
@@ -95,20 +95,22 @@ async fn main() -> Result<()> {
         .context("binding IPC server")?;
 
     // Spawn overlay process.
+    let mut overlay_child: Option<tokio::process::Child> = None;
     if config.show_overlay {
-        let overlay_path = std::env::current_exe()?
-            .parent()
-            .unwrap()
-            .join("incant-overlay");
-        match tokio::process::Command::new(&overlay_path).spawn() {
-            Ok(mut child) => {
-                tokio::spawn(async move {
-                    let _ = child.wait().await;
-                });
-                info!("Overlay spawned: {:?}", overlay_path);
+        match find_overlay_binary() {
+            Some(overlay_path) => {
+                match tokio::process::Command::new(&overlay_path).spawn() {
+                    Ok(child) => {
+                        info!("Overlay spawned: {:?}", overlay_path);
+                        overlay_child = Some(child);
+                    }
+                    Err(e) => {
+                        warn!("Failed to spawn overlay at {:?}: {}", overlay_path, e);
+                    }
+                }
             }
-            Err(e) => {
-                warn!("Failed to spawn overlay at {:?}: {}", overlay_path, e);
+            None => {
+                warn!("incant-overlay not found in PATH or next to incant-daemon");
             }
         }
     }
@@ -149,14 +151,25 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Channel from audio callback (real-time thread) → async consumer.
+    let (audio_tx, mut audio_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(1024);
+
     // Start audio capture stream.
-    let _audio_stream = audio::start_capture(
+    let (_audio_stream, native_sample_rate) = audio::start_capture(
         app_state.recording.clone(),
-        app_state.audio_buffer.clone(),
+        audio_tx,
         config.sample_rate,
     )
     .context("starting audio capture")?;
-    info!("Audio capture started");
+    info!("Audio capture started (native {} Hz)", native_sample_rate);
+
+    // Drain audio chunks from the real-time callback into AppState.
+    let collect_state = app_state.clone();
+    tokio::spawn(async move {
+        while let Some(chunk) = audio_rx.recv().await {
+            collect_state.append_audio(&chunk);
+        }
+    });
 
     // Spawn audio meter calculation loop.
     let meter_state = app_state.clone();
@@ -181,7 +194,7 @@ async fn main() -> Result<()> {
     let sm_config = config.clone();
     let sm_engine = stt_engine.clone();
     tokio::spawn(async move {
-        state_machine_loop(sm_state, sm_config, sm_engine, sounds).await;
+        state_machine_loop(sm_state, sm_config, sm_engine, sounds, native_sample_rate).await;
     });
 
     info!("Daemon ready. Waiting for commands.");
@@ -198,8 +211,41 @@ async fn main() -> Result<()> {
         let _ = std::fs::remove_file(&config.socket_path);
     }
 
+    // Kill overlay child so it doesn't linger as an orphan.
+    if let Some(mut child) = overlay_child {
+        info!("Terminating overlay...");
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+    }
+
     info!("Daemon stopped.");
     Ok(())
+}
+
+/// Find the incant-overlay binary: first check next to the daemon,
+/// then search PATH.
+fn find_overlay_binary() -> Option<std::path::PathBuf> {
+    // 1. Check next to current executable.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join("incant-overlay");
+            if sibling.exists() {
+                return Some(sibling);
+            }
+        }
+    }
+
+    // 2. Search PATH.
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let candidate = std::path::Path::new(dir).join("incant-overlay");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
 }
 
 /// Press-and-hold press-and-hold state machine.
@@ -207,8 +253,9 @@ async fn main() -> Result<()> {
 async fn state_machine_loop(
     state: AppState,
     config: config::Config,
-    stt_engine: Arc<tokio::sync::Mutex<stt::SttEngine>>,
+    stt_engine: Arc<std::sync::Mutex<stt::SttEngine>>,
     sounds: Option<SoundEffects>,
+    native_sample_rate: u32,
 ) {
     use tokio::sync::mpsc;
 
@@ -269,7 +316,7 @@ async fn state_machine_loop(
             if let Some(ref s) = sounds { s.play(Effect::Stop, config.sound_volume); }
 
             let audio = state.take_audio();
-            info!("Captured {} samples (~{:.1}s)", audio.len(), audio.len() as f32 / config.sample_rate as f32);
+            info!("Captured {} samples native @ {} Hz (~{:.1}s)", audio.len(), native_sample_rate, audio.len() as f32 / native_sample_rate as f32);
 
             if audio.is_empty() {
                 warn!("No audio captured");
@@ -277,6 +324,23 @@ async fn state_machine_loop(
                 was_recording = false;
                 continue;
             }
+
+            // Resample if the capture device runs at a different rate than the model expects.
+            let audio = if native_sample_rate != config.sample_rate {
+                match audio::resample_once(&audio, native_sample_rate, config.sample_rate) {
+                    Ok(resampled) => resampled,
+                    Err(e) => {
+                        error!("Resampling failed: {}", e);
+                        state.set_error(Some(format!("Resampling failed: {}", e)));
+                        state.set_status(Status::Error);
+                        error_clear_time = Some(Instant::now());
+                        was_recording = false;
+                        continue;
+                    }
+                }
+            } else {
+                audio
+            };
 
             if config.debug {
                 let debug_path = config.cache_dir.join("last_recording.wav");
@@ -287,10 +351,15 @@ async fn state_machine_loop(
                 }
             }
 
-            let result = {
-                let mut engine = stt_engine.lock().await;
-                engine.transcribe(&audio, config.sample_rate)
-            };
+            let engine = stt_engine.clone();
+            let sample_rate = config.sample_rate;
+            let audio_clone = audio.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let mut engine = engine.lock().unwrap();
+                engine.transcribe(&audio_clone, sample_rate)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("transcription task panicked: {}", e)));
 
             match result {
                 Ok(text) => {

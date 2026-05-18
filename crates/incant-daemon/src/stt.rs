@@ -173,14 +173,12 @@ async fn download_parakeet(model_dir: &Path) -> Result<()> {
             continue;
         }
         let url = format!("{}/{}", base_url, file);
-        info!("Downloading {} ...", url);
-        let response = reqwest::get(&url).await?;
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to download {}: {}", url, response.status());
+        if let Err(e) = download_file_with_resume(&url, &dest).await {
+            // Clean up partial download so the next run retries.
+            let part = dest.with_file_name(format!("{}.__part__", dest.file_name().unwrap_or_default().to_string_lossy()));
+            let _ = std::fs::remove_file(part);
+            return Err(e);
         }
-        let bytes = response.bytes().await?;
-        std::fs::write(&dest, bytes)?;
-        info!("Downloaded {} ({} bytes)", file, dest.metadata()?.len());
     }
 
     info!("Parakeet model downloaded to {:?}", model_dir);
@@ -206,16 +204,88 @@ async fn download_moonshine(model_dir: &Path) -> Result<()> {
             continue;
         }
         let url = format!("{}/{}", base_url, file);
-        info!("Downloading {} ...", url);
-        let response = reqwest::get(&url).await?;
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to download {}: {}", url, response.status());
+        if let Err(e) = download_file_with_resume(&url, &dest).await {
+            let part = dest.with_file_name(format!("{}.__part__", dest.file_name().unwrap_or_default().to_string_lossy()));
+            let _ = std::fs::remove_file(part);
+            return Err(e);
         }
-        let bytes = response.bytes().await?;
-        std::fs::write(&dest, bytes)?;
-        info!("Downloaded {} ({} bytes)", file, dest.metadata()?.len());
     }
 
     info!("Moonshine model downloaded to {:?}", model_dir);
+    Ok(())
+}
+
+/// Download a file with resume support via HTTP Range requests.
+/// Writes to `dest.__part__` and atomically renames to `dest` on success.
+async fn download_file_with_resume(url: &str, dest: &Path) -> Result<()> {
+    let part_path = dest.with_file_name(format!(
+        "{}.__part__",
+        dest.file_name().unwrap_or_default().to_string_lossy()
+    ));
+
+    let existing_size = if part_path.exists() {
+        part_path.metadata()?.len()
+    } else {
+        0
+    };
+
+    let client = reqwest::Client::new();
+    let mut request = client.get(url);
+
+    if existing_size > 0 {
+        info!("Resuming {} from {} bytes", url, existing_size);
+        request = request.header("Range", format!("bytes={}-", existing_size));
+    } else {
+        info!("Downloading {} ...", url);
+    }
+
+    let mut response = request.send().await?;
+    let status = response.status();
+
+    // 206 Partial Content = resumed successfully
+    // 200 OK = server doesn't support Range, starting from scratch
+    if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
+        anyhow::bail!("Failed to download {}: {}", url, status);
+    }
+
+    let total_size = response
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&part_path)
+        .with_context(|| format!("opening part file {:?}", part_path))?;
+
+    let mut downloaded = existing_size;
+    let mut last_report = std::time::Instant::now();
+
+    while let Some(chunk) = response.chunk().await? {
+        std::io::Write::write_all(&mut file, &chunk)?;
+        downloaded += chunk.len() as u64;
+
+        if last_report.elapsed() > std::time::Duration::from_secs(3) {
+            let fname = dest.file_name().unwrap_or_default().to_string_lossy();
+            match total_size {
+                Some(total) => {
+                    let pct = (downloaded as f64 / total as f64) * 100.0;
+                    info!("{}: {:.1}% ({}/{} bytes)", fname, pct, downloaded, total);
+                }
+                None => {
+                    info!("{}: {} bytes downloaded", fname, downloaded);
+                }
+            }
+            last_report = std::time::Instant::now();
+        }
+    }
+
+    // Rename part file to final destination.
+    std::fs::rename(&part_path, dest)
+        .with_context(|| format!("renaming {:?} to {:?}", part_path, dest))?;
+
+    info!("Downloaded {} ({} bytes)", dest.file_name().unwrap_or_default().to_string_lossy(), downloaded);
     Ok(())
 }

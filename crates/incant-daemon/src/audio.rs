@@ -2,15 +2,16 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 /// Start capturing audio from the default input device.
-/// Samples are appended to `buffer` while `recording` is true.
-/// Returns the cpal Stream (keep it alive to keep recording).
+/// Chunks of mono f32 samples at the *native* sample rate are sent via `tx`
+/// while `recording` is true.
+/// Returns the cpal Stream (keep it alive to keep recording) and the native sample rate.
 pub fn start_capture(
     recording: Arc<AtomicBool>,
-    buffer: Arc<Mutex<Vec<f32>>>,
+    tx: tokio::sync::mpsc::Sender<Vec<f32>>,
     target_sample_rate: u32,
 ) -> Result<(cpal::Stream, u32)> {
     let host = cpal::default_host();
@@ -38,19 +39,19 @@ pub fn start_capture(
     }
 
     // Fallback: pick any supported config and resample later.
-    let (config, needs_resample) = if let Some(cfg) = chosen_config {
+    let config = if let Some(cfg) = chosen_config {
         info!("Using native {} Hz f32 capture", target_sample_rate);
-        (cfg, false)
+        cfg
     } else {
         let fallback = device
             .default_input_config()
             .context("no default input config")?;
         warn!(
-            "Target sample rate {} not supported natively, using {} Hz with resampling",
+            "Target sample rate {} not supported natively, using {} Hz (will resample)",
             target_sample_rate,
             fallback.sample_rate().0
         );
-        (fallback, true)
+        fallback
     };
 
     let sample_rate = config.sample_rate().0;
@@ -61,31 +62,22 @@ pub fn start_capture(
             &device,
             &config.into(),
             recording,
-            buffer,
+            tx,
             channels,
-            sample_rate,
-            target_sample_rate,
-            needs_resample,
         ),
         SampleFormat::I16 => build_stream::<i16>(
             &device,
             &config.into(),
             recording,
-            buffer,
+            tx.clone(),
             channels,
-            sample_rate,
-            target_sample_rate,
-            needs_resample,
         ),
         SampleFormat::U16 => build_stream::<u16>(
             &device,
             &config.into(),
             recording,
-            buffer,
+            tx.clone(),
             channels,
-            sample_rate,
-            target_sample_rate,
-            needs_resample,
         ),
         _ => {
             anyhow::bail!("unsupported sample format: {:?}", config.sample_format());
@@ -96,18 +88,15 @@ pub fn start_capture(
     stream.play().context("failed to start audio stream")?;
     debug!("Audio stream started");
 
-    Ok((stream, if needs_resample { target_sample_rate } else { sample_rate }))
+    Ok((stream, sample_rate))
 }
 
 fn build_stream<T>(
     device: &cpal::Device,
     config: &StreamConfig,
     recording: Arc<AtomicBool>,
-    buffer: Arc<Mutex<Vec<f32>>>,
+    tx: tokio::sync::mpsc::Sender<Vec<f32>>,
     channels: u16,
-    sample_rate: u32,
-    target_sample_rate: u32,
-    needs_resample: bool,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample + cpal::FromSample<T> + dasp_sample::ToSample<f32>,
@@ -130,16 +119,8 @@ where
                 })
                 .collect();
 
-            let final_samples = if needs_resample && sample_rate != target_sample_rate {
-                // Simple linear resampling for now.
-                // For production, use rubato::SincFixedIn.
-                resample_linear(&mono_samples, sample_rate, target_sample_rate)
-            } else {
-                mono_samples
-            };
-
-            // Append directly (mutex is held briefly).
-            buffer.lock().unwrap().extend_from_slice(&final_samples);
+            // Send raw native-rate samples to async consumer.
+            let _ = tx.try_send(mono_samples);
         },
         err_fn,
         None,
@@ -148,25 +129,54 @@ where
     Ok(stream)
 }
 
-fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+/// Resample a buffer of f32 samples using high-quality sinc interpolation.
+/// This is CPU-intensive and should be called from `spawn_blocking`.
+pub fn resample_once(input: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
+    use rubato::{
+        Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+    };
+
     if from_rate == to_rate {
-        return input.to_vec();
+        return Ok(input.to_vec());
     }
+
     let ratio = to_rate as f64 / from_rate as f64;
-    let output_len = (input.len() as f64 * ratio) as usize;
-    let mut output = Vec::with_capacity(output_len);
-    for i in 0..output_len {
-        let src_idx = i as f64 / ratio;
-        let src_floor = src_idx.floor() as usize;
-        let src_ceil = (src_floor + 1).min(input.len() - 1);
-        let frac = src_idx - src_floor as f64;
-        let sample = input[src_floor] * (1.0 - frac as f32) + input[src_ceil] * frac as f32;
-        output.push(sample);
+    let chunk_size = 1024;
+    let params = SincInterpolationParameters {
+        sinc_len: 128,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Linear,
+        oversampling_factor: 128,
+        window: WindowFunction::BlackmanHarris2,
+    };
+    let mut resampler =
+        SincFixedIn::new(ratio, ratio * 1.2, params, chunk_size, 1)
+            .context("creating sinc resampler")?;
+
+    let mut output = Vec::with_capacity((input.len() as f64 * ratio) as usize);
+    let mut pos = 0;
+
+    while pos + chunk_size <= input.len() {
+        let chunk = &input[pos..pos + chunk_size];
+        let out = resampler
+            .process(&[chunk], None)
+            .context("resampling chunk")?;
+        output.extend_from_slice(&out[0]);
+        pos += chunk_size;
     }
-    output
+
+    if pos < input.len() {
+        let remaining = &input[pos..];
+        let out = resampler
+            .process_partial(Some(&[remaining]), None)
+            .context("resampling final chunk")?;
+        output.extend_from_slice(&out[0]);
+    }
+
+    Ok(output)
 }
 
-/// Save a buffer of f32 samples (assumed 16kHz) to a WAV file for debugging.
+/// Save a buffer of f32 samples to a WAV file for debugging.
 pub fn save_wav(path: &std::path::Path, samples: &[f32], sample_rate: u32) -> Result<()> {
     use hound::{WavSpec, WavWriter};
     let spec = WavSpec {
