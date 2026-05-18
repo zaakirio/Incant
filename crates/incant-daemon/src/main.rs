@@ -284,10 +284,19 @@ async fn state_machine_loop(
         }
 
         let is_recording = state.is_recording();
+        let current_status = *state.status.lock().unwrap();
 
-        // Detect press transition: start -> recording.
-        if !was_recording && is_recording {
-            if let Some(ref s) = sounds { s.play(Effect::Start, config.sound_volume); }
+        // Promote Preparing -> Recording after the minimum hold time.
+        // This prevents quick modifier taps (e.g. Alt-Tab) from flashing the HUD.
+        if current_status == Status::Preparing && is_recording {
+            let elapsed = state.recording_start.lock().unwrap()
+                .map(|s| s.elapsed())
+                .unwrap_or(Duration::ZERO);
+            if elapsed >= Duration::from_millis(config.minimum_key_time_ms) {
+                state.set_status(Status::Recording);
+                info!("Promoted to Recording after {:.3}s hold", elapsed.as_secs_f32());
+                if let Some(ref s) = sounds { s.play(Effect::Start, config.sound_volume); }
+            }
         }
 
         // Detect release transition: recording -> stop.
@@ -302,10 +311,10 @@ async fn state_machine_loop(
             let min_duration = Duration::from_millis(config.minimum_key_time_ms);
 
             if duration < min_duration {
-                info!("Recording too short ({:.3}s < {:.3}s), discarding", duration.as_secs_f32(), min_duration.as_secs_f32());
+                // Quick tap: silently discard without HUD flash or cancel sound.
+                info!("Quick tap discarded ({:.3}s < {:.3}s)", duration.as_secs_f32(), min_duration.as_secs_f32());
                 state.set_status(Status::Hidden);
                 state.clear_audio();
-                if let Some(ref s) = sounds { s.play(Effect::Cancel, config.sound_volume); }
                 was_recording = false;
                 continue;
             }

@@ -1,7 +1,7 @@
 use gtk4::prelude::*;
 use gtk4_layer_shell::{Layer, LayerShell};
 use serde::Deserialize;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -157,21 +157,39 @@ fn ipc_listener(state: Arc<Mutex<DaemonState>>) {
         .join("incant/daemon.sock");
 
     let mut consecutive_failures = 0;
+    let status_cmd = b"{\"cmd\":\"status\"}\n";
 
     loop {
-        if let Ok(stream) = UnixStream::connect(&socket_path) {
+        if let Ok(mut stream) = UnixStream::connect(&socket_path) {
             consecutive_failures = 0;
-            let reader = BufReader::new(stream);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if let Ok(response) = serde_json::from_str::<Response>(&line) {
-                        if let Some(daemon_state) = response.state {
-                            *state.lock().unwrap() = daemon_state;
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+
+            loop {
+                // Poll the daemon for current state
+                if stream.write_all(status_cmd).is_err() {
+                    break; // Connection broken
+                }
+                if stream.flush().is_err() {
+                    break;
+                }
+
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {
+                        if let Ok(response) = serde_json::from_str::<Response>(&line) {
+                            if let Some(daemon_state) = response.state {
+                                *state.lock().unwrap() = daemon_state;
+                            }
                         }
                     }
+                    Err(_) => break,
                 }
+
+                std::thread::sleep(Duration::from_millis(50));
             }
-            // Connection dropped — daemon may have restarted. Keep trying briefly.
+            // Connection dropped — daemon may have restarted.
         }
 
         consecutive_failures += 1;
@@ -199,10 +217,9 @@ window {
 }
 
 #incant-capsule.preparing {
-    background: rgba(0, 0, 0, 0.8);
-    opacity: 1;
-    transform: scale(1);
-    min-width: 16px;
+    /* Invisible during prepare phase so quick modifier taps (e.g. Alt-Tab) don't flash the HUD. */
+    opacity: 0;
+    transform: scale(0);
 }
 
 #incant-capsule.recording {

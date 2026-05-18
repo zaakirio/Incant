@@ -81,7 +81,10 @@ async fn process_command(cmd: Command, state: &AppState, config: &Config) -> Res
         Command::Press => {
             // If already recording in locked mode, tap again to stop.
             if state.is_recording() && state.is_locked() {
-                state.stop_recording();
+                // Don't call stop_recording() here — it clears recording_start,
+                // which breaks duration calculation in the state machine.
+                state.recording.store(false, std::sync::atomic::Ordering::SeqCst);
+                state.set_locked(false);
                 info!("Recording stopped (tap-to-stop in locked mode)");
                 return Response::ok("recording stopped (locked)").with_state(state.current());
             }
@@ -101,7 +104,9 @@ async fn process_command(cmd: Command, state: &AppState, config: &Config) -> Res
 
             state.record_press();
             state.start_recording();
-            state.set_status(Status::Recording);
+            // Start in Preparing state. The state machine will promote to Recording
+            // after minimum_key_time_ms, so quick taps (e.g. Alt-Tab) don't flash the HUD.
+            state.set_status(Status::Preparing);
 
             if is_double_tap {
                 state.set_locked(true);

@@ -111,20 +111,70 @@ ok "Model ready"
 HYPRLAND_CONFIG_DIR="${HOME}/.config/hypr"
 HYPRLAND_CONFIG="${HYPRLAND_CONFIG_DIR}/incant.conf"
 
+# Copy our binds file
+mkdir -p "$HYPRLAND_CONFIG_DIR"
 if [[ -f "$HYPRLAND_CONFIG" ]]; then
     warn "Existing Hyprland config found at ${HYPRLAND_CONFIG}"
     read -rp "    Overwrite? [y/N] " reply
     if [[ "$reply" =~ ^[Yy]$ ]]; then
         cp hyprland/incant.conf "$HYPRLAND_CONFIG"
         ok "Hyprland config updated"
-    else
-        info "Skipped. Make sure your Hyprland config includes the incant binds."
     fi
 else
-    mkdir -p "$HYPRLAND_CONFIG_DIR"
     cp hyprland/incant.conf "$HYPRLAND_CONFIG"
     ok "Installed Hyprland config to ${HYPRLAND_CONFIG}"
-    info "    Add this line to ~/.config/hypr/hyprland.conf:"
+fi
+
+# Try to auto-inject source line into the main hyprland.conf
+inject_source() {
+    local target_file="$1"
+    local source_line="source = ${HYPRLAND_CONFIG}"
+
+    # Already sourced?
+    if grep -qF "$source_line" "$target_file" 2>/dev/null; then
+        return 0
+    fi
+
+    # Append with a comment block
+    cat >> "$target_file" <<EOF
+
+# ── Incant voice dictation ──
+# Remove this block to disable Incant binds.
+${source_line}
+EOF
+    return 0
+}
+
+# Discover main hyprland.conf
+HYPRLAND_MAIN=""
+for candidate in \
+    "${HYPRLAND_CONFIG_DIR}/hyprland.conf" \
+    "${HYPRLAND_CONFIG_DIR}/hypr.conf" \
+    "${HOME}/.hyprland.conf"; do
+    if [[ -f "$candidate" ]]; then
+        HYPRLAND_MAIN="$candidate"
+        break
+    fi
+done
+
+if [[ -n "$HYPRLAND_MAIN" ]]; then
+    if grep -qF "incant.conf" "$HYPRLAND_MAIN" 2>/dev/null; then
+        ok "Hyprland already sources incant.conf"
+    else
+        info "Injecting incant source into ${HYPRLAND_MAIN}..."
+        inject_source "$HYPRLAND_MAIN"
+        ok "Source line added"
+    fi
+
+    # Reload if Hyprland is running
+    if command -v hyprctl &>/dev/null && hyprctl instances &>/dev/null; then
+        info "Reloading Hyprland..."
+        hyprctl reload &>/dev/null || true
+        ok "Hyprland reloaded"
+    fi
+else
+    warn "Could not find main Hyprland config (hyprland.conf)"
+    info "    Add this line manually to your Hyprland config:"
     echo "        source = ${HYPRLAND_CONFIG}"
 fi
 
