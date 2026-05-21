@@ -1,16 +1,13 @@
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 /// Start capturing audio from the default input device.
-/// Chunks of mono f32 samples at the *native* sample rate are sent via `tx`
-/// while `recording` is true.
+/// Chunks of mono f32 samples at the *native* sample rate are continuously
+/// sent via `tx`. The consumer decides what to keep versus discard.
 /// Returns the cpal Stream (keep it alive to keep recording) and the native sample rate.
 pub fn start_capture(
-    recording: Arc<AtomicBool>,
     tx: tokio::sync::mpsc::Sender<Vec<f32>>,
     target_sample_rate: u32,
 ) -> Result<(cpal::Stream, u32)> {
@@ -62,12 +59,12 @@ pub fn start_capture(
     let channels = config.channels();
 
     let stream = match config.sample_format() {
-        SampleFormat::F32 => build_stream::<f32>(&device, &config.into(), recording, tx, channels),
+        SampleFormat::F32 => build_stream::<f32>(&device, &config.into(), tx, channels),
         SampleFormat::I16 => {
-            build_stream::<i16>(&device, &config.into(), recording, tx.clone(), channels)
+            build_stream::<i16>(&device, &config.into(), tx.clone(), channels)
         }
         SampleFormat::U16 => {
-            build_stream::<u16>(&device, &config.into(), recording, tx.clone(), channels)
+            build_stream::<u16>(&device, &config.into(), tx.clone(), channels)
         }
         _ => {
             anyhow::bail!("unsupported sample format: {:?}", config.sample_format());
@@ -84,7 +81,6 @@ pub fn start_capture(
 fn build_stream<T>(
     device: &cpal::Device,
     config: &StreamConfig,
-    recording: Arc<AtomicBool>,
     tx: tokio::sync::mpsc::Sender<Vec<f32>>,
     channels: u16,
 ) -> Result<cpal::Stream>
@@ -96,10 +92,6 @@ where
     let stream = device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
-            if !recording.load(Ordering::Relaxed) {
-                return;
-            }
-
             // Convert to f32 and downmix to mono.
             let mono_samples: Vec<f32> = data
                 .chunks(channels as usize)

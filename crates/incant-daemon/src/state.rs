@@ -2,6 +2,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Pre-roll buffer size in samples. At 16 kHz this is ~500 ms;
+/// at 48 kHz it is ~166 ms. Covers the latency from keypress to
+/// the daemon receiving the start command.
+const PRE_ROLL_SAMPLES: usize = 8000;
+
 use crate::protocol::{DaemonState, Meter, Status};
 
 /// Press-and-hold state machine for the dictation workflow.
@@ -65,7 +70,8 @@ impl AppState {
     pub fn start_recording(&self) {
         self.recording.store(true, Ordering::SeqCst);
         *self.recording_start.lock().unwrap() = Some(Instant::now());
-        self.audio_buffer.lock().unwrap().clear();
+        // Do NOT clear the buffer — keep the pre-roll audio that was
+        // captured while waiting for the keypress to register.
         self.reset_meter();
     }
 
@@ -119,7 +125,18 @@ impl AppState {
     }
 
     pub fn append_audio(&self, samples: &[f32]) {
-        self.audio_buffer.lock().unwrap().extend_from_slice(samples);
+        let mut buf = self.audio_buffer.lock().unwrap();
+        buf.extend_from_slice(samples);
+
+        // When idle (status == Hidden), keep only the most recent pre-roll
+        // so we don't grow unbounded. We check status rather than the
+        // recording flag to avoid a race where a late audio chunk arrives
+        // after recording is stopped but before the state machine has had
+        // a chance to call take_audio().
+        if *self.status.lock().unwrap() == Status::Hidden && buf.len() > PRE_ROLL_SAMPLES {
+            let excess = buf.len() - PRE_ROLL_SAMPLES;
+            buf.drain(0..excess);
+        }
     }
 
     pub fn take_audio(&self) -> Vec<f32> {

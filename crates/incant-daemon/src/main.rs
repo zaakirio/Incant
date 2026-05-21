@@ -150,7 +150,7 @@ async fn main() -> Result<()> {
 
     // Start audio capture stream.
     let (_audio_stream, native_sample_rate) =
-        audio::start_capture(app_state.recording.clone(), audio_tx, config.sample_rate)
+        audio::start_capture(audio_tx, config.sample_rate)
             .context("starting audio capture")?;
     info!("Audio capture started (native {} Hz)", native_sample_rate);
 
