@@ -86,7 +86,7 @@ impl Default for Config {
             promotion_peak_threshold: default_promotion_peak_threshold(),
             double_tap_lock_enabled: true,
             double_tap_window_ms: default_double_tap_window_ms(),
-            use_double_tap_only: false,
+            use_double_tap_only: true,
             sound_volume: default_sound_volume(),
         }
     }

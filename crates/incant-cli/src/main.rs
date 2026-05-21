@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{error, info};
@@ -16,7 +17,7 @@ struct Cli {
     #[arg(short, long)]
     socket: Option<PathBuf>,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -31,6 +32,8 @@ enum Commands {
     Status,
     /// Ping the daemon.
     Ping,
+    /// Stop the daemon.
+    Stop,
     /// Run diagnostic checks.
     Doctor,
 }
@@ -77,35 +80,79 @@ async fn main() -> Result<()> {
             .join("incant/daemon.sock")
     });
 
-    let cmd = match cli.command {
-        Commands::Press => IpcCommand::Press,
-        Commands::Release => IpcCommand::Release,
-        Commands::Cancel => IpcCommand::Cancel,
-        Commands::Status => IpcCommand::Status,
-        Commands::Ping => IpcCommand::Ping,
-        Commands::Doctor => return doctor::run().await,
-    };
-
-    let response = send_command(&socket_path, &cmd).await?;
-
-    if response.ok {
-        info!("OK: {}", response.message);
-        if let Some(ref state) = response.state {
-            println!("Status: {}", state.status);
-            println!(
-                "Meter: avg={:.3} peak={:.3}",
-                state.meter.average_power, state.meter.peak_power
-            );
-            if let Some(ref msg) = state.message {
-                println!("Message: {}", msg);
-            }
+    match cli.command {
+        Some(Commands::Stop) => {
+            let _ = tokio::process::Command::new("systemctl")
+                .args(["--user", "stop", "incant-daemon"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+            let _ = tokio::process::Command::new("pkill")
+                .args(["-f", "incant-daemon"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+            println!("Daemon stopped");
+            Ok(())
         }
-    } else {
-        error!("Error: {}", response.message);
-        std::process::exit(1);
-    }
+        Some(Commands::Doctor) => doctor::run().await,
+        Some(cmd) => {
+            let ipc_cmd = match cmd {
+                Commands::Press => IpcCommand::Press,
+                Commands::Release => IpcCommand::Release,
+                Commands::Cancel => IpcCommand::Cancel,
+                Commands::Status => IpcCommand::Status,
+                Commands::Ping => IpcCommand::Ping,
+                _ => unreachable!(),
+            };
 
-    Ok(())
+            let response = send_command(&socket_path, &ipc_cmd).await?;
+
+            if response.ok {
+                info!("OK: {}", response.message);
+                if let Some(ref state) = response.state {
+                    println!("Status: {}", state.status);
+                    println!(
+                        "Meter: avg={:.3} peak={:.3}",
+                        state.meter.average_power, state.meter.peak_power
+                    );
+                    if let Some(ref msg) = state.message {
+                        println!("Message: {}", msg);
+                    }
+                }
+            } else {
+                error!("Error: {}", response.message);
+                std::process::exit(1);
+            }
+
+            Ok(())
+        }
+        None => {
+            match send_command(&socket_path, &IpcCommand::Status).await {
+                Ok(response) if response.ok => {
+                    println!("Daemon is running");
+                    if let Some(state) = response.state {
+                        println!("Status: {}", state.status);
+                        println!(
+                            "Meter: avg={:.3} peak={:.3}",
+                            state.meter.average_power, state.meter.peak_power
+                        );
+                        if let Some(ref msg) = state.message {
+                            println!("Message: {}", msg);
+                        }
+                    }
+                }
+                _ => {
+                    println!("Daemon is not running.");
+                    println!();
+                    println!("Start it with:  systemctl --user start incant-daemon");
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn send_command(socket_path: &PathBuf, cmd: &IpcCommand) -> Result<Response> {

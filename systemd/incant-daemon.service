@@ -21,8 +21,9 @@ Environment=RUST_LOG=incant_daemon=info
 #   * write access to ~/.config/incant for the auto-generated config
 #   * to spawn wtype / dotool / wl-copy for text injection
 NoNewPrivileges=yes
-ProtectSystem=strict
+ProtectSystem=yes
 ProtectHome=read-only
+RuntimeDirectory=incant
 ReadWritePaths=%h/.cache/incant %h/.config/incant
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

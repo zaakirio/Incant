@@ -133,11 +133,13 @@ If you prefer the classic press‑and‑hold workflow, set `use_double_tap_only 
 The `incant` CLI talks to the running daemon over a Unix socket (chmod 0600). It is invoked by Hyprland's `bind` handlers, but is also useful for scripting and debugging:
 
 ```bash
+incant           # Show daemon status
 incant press     # Tap (start recording on second tap in double-tap mode)
 incant release   # Stop recording (press-and-hold mode only)
 incant cancel    # Cancel an in-progress recording or transcription
 incant status    # Print the current daemon state
 incant ping      # Health check
+incant stop      # Stop the daemon
 incant doctor    # Run diagnostic checks
 ```
 
