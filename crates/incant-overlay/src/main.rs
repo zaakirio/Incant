@@ -103,11 +103,14 @@ fn main() {
             ipc_listener(state_clone);
         });
 
-        // Animation loop ~30fps
+        // Animation loop @ ~60 fps. We tick the UI faster than the daemon
+        // publishes meter values so we have headroom to interpolate between
+        // samples — without that, the bar moves in visible discrete steps.
         let state_clone = state.clone();
-        glib::source::timeout_add_local(Duration::from_millis(33), move || {
+        let mut anim = MeterAnim::default();
+        glib::source::timeout_add_local(Duration::from_millis(FRAME_MS), move || {
             let daemon_state = state_clone.lock().unwrap().clone();
-            update_ui(&capsule, &meter_bar, &daemon_state);
+            update_ui(&capsule, &meter_bar, &daemon_state, &mut anim);
             glib::ControlFlow::Continue
         });
     });
@@ -115,7 +118,46 @@ fn main() {
     app.run();
 }
 
-fn update_ui(capsule: &gtk4::Box, meter_bar: &gtk4::Box, state: &DaemonState) {
+// Frame cadence for the UI loop. 16 ms ≈ 60 fps.
+const FRAME_MS: u64 = 16;
+
+// Pixel range for the meter bar. Smoothed `width` is interpolated within this.
+const METER_MIN_PX: f32 = 16.0;
+const METER_MAX_PX: f32 = 96.0;
+
+// Attack/release smoothing for the meter, in the audio-meter tradition:
+// the bar leaps up almost instantly with new energy, then glides back down
+// slowly. Together they read as "responsive but not twitchy".
+//
+// alpha = 1 - exp(-dt / tau), evaluated for dt = FRAME_MS.
+// At 16 ms, tau=40ms → α≈0.330 (attack), tau=180ms → α≈0.084 (release).
+const ATTACK_ALPHA: f32 = 0.330;
+const RELEASE_ALPHA: f32 = 0.084;
+// Opacity moves with the average and uses a single symmetric coefficient
+// (≈90 ms time constant) so it neither flickers nor lags badly.
+const OPACITY_ALPHA: f32 = 0.165;
+
+/// Per-frame meter smoothing state. Lives across animation ticks so we can
+/// integrate the latest target value toward something the eye perceives as
+/// continuous motion, even though the daemon only publishes ~30 samples/sec.
+#[derive(Default)]
+struct MeterAnim {
+    width_px: f32,
+    opacity: f32,
+    last_status: Option<Status>,
+}
+
+fn smooth(current: f32, target: f32, attack: f32, release: f32) -> f32 {
+    let alpha = if target > current { attack } else { release };
+    current + (target - current) * alpha
+}
+
+fn update_ui(
+    capsule: &gtk4::Box,
+    meter_bar: &gtk4::Box,
+    state: &DaemonState,
+    anim: &mut MeterAnim,
+) {
     // Remove all status classes (GTK4: `add_css_class`/`remove_css_class`
     // directly on the widget; `style_context()` was deprecated in 4.10).
     for class in &[
@@ -139,6 +181,16 @@ fn update_ui(capsule: &gtk4::Box, meter_bar: &gtk4::Box, state: &DaemonState) {
         child = next;
     }
 
+    // Reset the smoothing integrator whenever we leave Recording so the next
+    // session starts from a known baseline instead of inheriting stale values.
+    if anim.last_status.as_ref() != Some(&Status::Recording)
+        && state.status == Status::Recording
+    {
+        anim.width_px = METER_MIN_PX;
+        anim.opacity = 0.35;
+    }
+    anim.last_status = Some(state.status.clone());
+
     match state.status {
         Status::Hidden => {
             capsule.add_css_class("hidden");
@@ -152,10 +204,18 @@ fn update_ui(capsule: &gtk4::Box, meter_bar: &gtk4::Box, state: &DaemonState) {
             // signal aggressively (and gamma-curve it) for a lively meter.
             let avg = (state.meter.average_power * 4.0).clamp(0.0, 1.0).powf(0.6);
             let peak = (state.meter.peak_power * 2.5).clamp(0.0, 1.0).powf(0.6);
-            let width = 16.0 + (peak * 80.0); // 16px to 96px
-            meter_bar.set_size_request(width as i32, -1);
-            // Keep the bar visible at all times, just modulate its opacity.
-            meter_bar.set_opacity((0.35 + 0.65 * avg as f64).clamp(0.35, 1.0));
+
+            // Target geometry derived from the latest sample.
+            let target_width = METER_MIN_PX + peak * (METER_MAX_PX - METER_MIN_PX);
+            let target_opacity = (0.35 + 0.65 * avg).clamp(0.35, 1.0);
+
+            // Integrate toward the target. Fast on the way up, slow on the
+            // way down → bar feels responsive without flicker.
+            anim.width_px = smooth(anim.width_px, target_width, ATTACK_ALPHA, RELEASE_ALPHA);
+            anim.opacity = smooth(anim.opacity, target_opacity, OPACITY_ALPHA, OPACITY_ALPHA);
+
+            meter_bar.set_size_request(anim.width_px.round() as i32, -1);
+            meter_bar.set_opacity(anim.opacity as f64);
         }
         Status::Transcribing => {
             capsule.add_css_class("transcribing");
@@ -213,7 +273,10 @@ fn ipc_listener(state: Arc<Mutex<DaemonState>>) {
                     Err(_) => break,
                 }
 
-                std::thread::sleep(Duration::from_millis(50));
+                // Poll at ~30 Hz to match the daemon's meter-publish cadence.
+                // Polling slower drops samples and makes the bar visibly step;
+                // polling faster just wastes IPC traffic on duplicate state.
+                std::thread::sleep(Duration::from_millis(33));
             }
             // Connection dropped — daemon may have restarted.
         }
@@ -299,7 +362,9 @@ window {
     border-radius: 6px;
     margin: 4px;
     box-shadow: inset 0 0 4px rgba(255, 100, 100, 0.8);
-    transition: width 0.05s linear;
+    /* No CSS transition on width/opacity: those are smoothed per-frame in
+       Rust via an attack/release filter. Letting CSS animate them too would
+       double-ease and produce a sluggish, gummy feel. */
 }
 
 @keyframes recording-pulse {

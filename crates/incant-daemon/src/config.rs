@@ -145,10 +145,23 @@ fn default_buffer_size() -> usize {
 }
 
 fn default_output_methods() -> Vec<String> {
+    // Order matters: each method is tried in turn until one succeeds.
+    //
+    // `wtype` is the safe default: it types each character via Wayland's
+    // virtual-keyboard protocol, which every Wayland-native app receives as
+    // normal keyboard input.
+    //
+    // `wl-clipboard-paste` is available but not default. It collapses paste
+    // latency to a single Ctrl+V keystroke — fantastic for long dictations —
+    // but Ctrl+V isn't universally the paste shortcut (terminals use
+    // Ctrl+Shift+V, some apps intercept it for other purposes). Users who
+    // dictate mainly into editors/chat apps can promote it to the first slot
+    // in their config; we don't impose it.
     vec![
         "wtype".to_string(),
         "dotool".to_string(),
         "wl-copy".to_string(),
+        "wl-clipboard-paste".to_string(),
     ]
 }
 

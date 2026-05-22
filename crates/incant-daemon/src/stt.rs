@@ -121,7 +121,7 @@ impl SttEngine {
         };
         recognizer_config.model_config.tokens = Some(tokens.to_string_lossy().into());
         recognizer_config.model_config.provider = Some(detect_provider());
-        recognizer_config.model_config.num_threads = config.num_threads.max(1);
+        recognizer_config.model_config.num_threads = resolve_num_threads(config.num_threads);
         recognizer_config.decoding_method = Some("greedy_search".into());
 
         let recognizer = sherpa_onnx::OfflineRecognizer::create(&recognizer_config)
@@ -157,7 +157,7 @@ impl SttEngine {
         };
         recognizer_config.model_config.tokens = Some(tokens.to_string_lossy().into());
         recognizer_config.model_config.provider = Some(detect_provider());
-        recognizer_config.model_config.num_threads = config.num_threads.max(1);
+        recognizer_config.model_config.num_threads = resolve_num_threads(config.num_threads);
         recognizer_config.decoding_method = Some("greedy_search".into());
 
         let recognizer = sherpa_onnx::OfflineRecognizer::create(&recognizer_config)
@@ -175,6 +175,32 @@ impl SttEngine {
             .ok_or_else(|| anyhow::anyhow!("getting transcription result failed"))?;
         Ok(result.text)
     }
+}
+
+/// Resolve the configured thread count for ONNX Runtime.
+///
+/// `num_threads == 0` is the "auto" sentinel: pick a sensible default based on
+/// the host's available parallelism. Anything else (positive) is taken as-is.
+///
+/// For Parakeet's encoder, ONNX Runtime scales well up to ~4–8 intra-op
+/// threads on x86 CPUs; beyond that, contention with its own thread pool and
+/// the audio / IPC threads makes things *slower*, not faster. So we cap at 8.
+fn resolve_num_threads(configured: i32) -> i32 {
+    if configured > 0 {
+        return configured;
+    }
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    // Leave at least one core for the audio callback / overlay / IPC, and cap
+    // at 8 where intra-op parallelism stops paying for itself.
+    let auto = cores.saturating_sub(1).clamp(2, 8);
+    tracing::info!(
+        "STT threads: auto-selected {} (host has {} logical cores)",
+        auto,
+        cores
+    );
+    auto as i32
 }
 
 /// Detect whether CUDA is available for ONNX Runtime.

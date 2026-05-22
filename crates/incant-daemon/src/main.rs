@@ -402,21 +402,37 @@ async fn state_machine_loop(
             let engine = stt_engine.clone();
             let sample_rate = config.sample_rate;
             let audio_clone = audio.clone();
+            let audio_seconds = audio.len() as f32 / config.sample_rate as f32;
+            let stt_started = Instant::now();
             let result = tokio::task::spawn_blocking(move || {
                 let mut engine = engine.lock().unwrap();
                 engine.transcribe(&audio_clone, sample_rate)
             })
             .await
             .unwrap_or_else(|e| Err(anyhow::anyhow!("transcription task panicked: {}", e)));
+            let stt_elapsed = stt_started.elapsed();
 
             match result {
                 Ok(text) => {
                     let text = text.trim().to_string();
                     if !text.is_empty() {
-                        info!("Transcription: {}", text);
+                        let rtf = stt_elapsed.as_secs_f32() / audio_seconds.max(0.001);
+                        info!(
+                            "Transcription: {} (stt={:.2}s for {:.2}s audio, rtf={:.2}x)",
+                            text,
+                            stt_elapsed.as_secs_f32(),
+                            audio_seconds,
+                            rtf
+                        );
                         state.set_result(text.clone());
 
-                        if let Err(e) = output::type_text(&text, &config.output_methods) {
+                        let inject_started = Instant::now();
+                        let inject_result = output::type_text(&text, &config.output_methods);
+                        info!(
+                            "Text injection took {:.3}s",
+                            inject_started.elapsed().as_secs_f32()
+                        );
+                        if let Err(e) = inject_result {
                             error!("Failed to inject text: {}", e);
                             state.set_error(Some(format!("Paste failed: {}", e)));
                             state.set_status(Status::Error);

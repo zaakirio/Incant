@@ -1,16 +1,24 @@
 [Unit]
 Description=Incant voice dictation daemon
 Documentation=https://github.com/zaakirio/Incant
-After=pipewire.service pipewire-pulse.service
+# Wait for the Wayland session: the daemon spawns incant-overlay (GTK4 layer-shell)
+# and shells out to wtype / wl-copy / dotool, all of which need WAYLAND_DISPLAY.
+# graphical-session.target is started by the compositor (UWSM, Hyprland systemd
+# integration, gnome-session, etc.) *after* WAYLAND_DISPLAY has been imported
+# into the systemd-user environment.
+After=graphical-session.target pipewire.service pipewire-pulse.service
+Requisite=graphical-session.target
+PartOf=graphical-session.target
 Wants=pipewire.service
+# Start-rate limit lives at the [Unit] level, not [Service].
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/incant-daemon
 Restart=on-failure
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 Environment=RUST_LOG=incant_daemon=info
 
@@ -39,4 +47,4 @@ SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
