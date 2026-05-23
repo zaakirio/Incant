@@ -1,4 +1,5 @@
 use gtk4::prelude::*;
+use gtk4::cairo;
 use gtk4_layer_shell::{Layer, LayerShell};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader, Write};
@@ -84,6 +85,16 @@ fn main() {
             &provider,
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+
+        // Anchoring Left+Right stretches this layer surface across the full
+        // monitor width, so without an empty input region the transparent
+        // gutters on either side of the capsule eat pointer events for any
+        // window beneath — e.g. Brave's URL bar.
+        window.connect_realize(|w| {
+            if let Some(surface) = w.surface() {
+                surface.set_input_region(Some(&cairo::Region::create()));
+            }
+        });
 
         window.present();
 
