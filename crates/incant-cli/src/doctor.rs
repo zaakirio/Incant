@@ -205,36 +205,47 @@ fn check_binary(name: &str, required: bool) -> Check {
 fn check_model() -> Check {
     let cache_dir = dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from("~/.cache"))
-        .join("incant/models");
+        .join("incant");
 
-    let candidates = [
-        "parakeet-tdt-0.6b-v3-int8",
-        "parakeet-tdt-0.6b-v2-int8",
-        "moonshine-tiny-en-int8",
-    ];
+    let downloaded: Vec<&str> = incant_daemon::stt::MODELS
+        .iter()
+        .filter(|def| incant_daemon::stt::is_downloaded(&cache_dir, def))
+        .map(|def| def.name)
+        .collect();
 
-    for &cand in &candidates {
-        let path = cache_dir.join(cand);
-        if path.is_dir()
-            && path
-                .read_dir()
-                .map(|mut d| d.next().is_some())
-                .unwrap_or(false)
-        {
-            return Check {
-                name: "STT model".into(),
-                result: CheckResult::Pass,
-                message: format!("found at ~/.cache/incant/models/{cand}"),
-                fix: None,
-            };
-        }
+    // Also accept the legacy v2 dir for users who haven't migrated.
+    let legacy = cache_dir
+        .join("models/parakeet-tdt-0.6b-v2-int8")
+        .is_dir();
+
+    if !downloaded.is_empty() {
+        let label = if legacy {
+            format!("{} (+ legacy v2)", downloaded.join(", "))
+        } else {
+            downloaded.join(", ")
+        };
+        return Check {
+            name: "STT model".into(),
+            result: CheckResult::Pass,
+            message: format!("downloaded: {label}"),
+            fix: None,
+        };
+    }
+
+    if legacy {
+        return Check {
+            name: "STT model".into(),
+            result: CheckResult::Warn,
+            message: "only legacy Parakeet v2 found".into(),
+            fix: Some("Run: incant model use parakeet  (pulls v3, the new default)".into()),
+        };
     }
 
     Check {
         name: "STT model".into(),
         result: CheckResult::Fail,
         message: "No model found in ~/.cache/incant/models".into(),
-        fix: Some("Run: incant-daemon download-model".into()),
+        fix: Some("Run: incant model use parakeet".into()),
     }
 }
 

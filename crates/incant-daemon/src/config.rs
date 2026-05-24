@@ -4,6 +4,13 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
+    /// Friendly model name ("parakeet", "whisper", "moonshine"). When set,
+    /// resolves to `<cache_dir>/models/<dir_name>` and overrides `model_path`.
+    /// This is the plug-and-play knob — leave `model_path` unset and just
+    /// swap this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+
     #[serde(default = "default_model_path")]
     pub model_path: PathBuf,
 
@@ -72,6 +79,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            model: None,
             model_path: default_model_path(),
             sample_rate: default_sample_rate(),
             socket_path: default_socket_path(),
@@ -110,8 +118,26 @@ impl Config {
 
         let contents = std::fs::read_to_string(&config_file)
             .with_context(|| format!("reading config file {:?}", config_file))?;
-        let config: Config = toml::from_str(&contents)
+        let mut config: Config = toml::from_str(&contents)
             .with_context(|| format!("parsing config file {:?}", config_file))?;
+
+        // Named model wins over model_path. Unknown names fall back with a
+        // warning rather than failing — the user might be on an older binary
+        // that doesn't know about a freshly-added registry entry.
+        if let Some(name) = config.model.as_deref() {
+            match crate::stt::find_by_name(name) {
+                Some(def) => {
+                    config.model_path = config.cache_dir.join("models").join(def.dir_name);
+                }
+                None => {
+                    tracing::warn!(
+                        "config: model = {:?} is not a known model; falling back to model_path ({:?})",
+                        name,
+                        config.model_path
+                    );
+                }
+            }
+        }
 
         Ok(config)
     }

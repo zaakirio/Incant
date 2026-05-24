@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 use crate::config::Config;
@@ -13,6 +13,40 @@ struct ModelFile {
     sha256: &'static str,
     /// Expected size in bytes.
     size: u64,
+}
+
+/// Which sherpa-onnx model family this entry is. Determines how files are
+/// wired into `OfflineRecognizerConfig` at load time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelKind {
+    /// Parakeet-style transducer (encoder + decoder + joiner).
+    Transducer,
+    /// Whisper (encoder + decoder; may reference external .weights).
+    Whisper,
+    /// Moonshine (preprocessor + encoder + cached/uncached decoders).
+    Moonshine,
+}
+
+/// One known, downloadable STT model. Adding a new model is one struct literal
+/// in `MODELS` plus (if the family is new) one match arm in `SttEngine::new`.
+pub struct ModelDef {
+    /// Friendly name used in config (`model = "parakeet"`) and CLI.
+    pub name: &'static str,
+    /// Subdirectory under `<cache_dir>/models/` where files are stored.
+    pub dir_name: &'static str,
+    /// One-line summary shown by `incant model list`.
+    pub description: &'static str,
+    /// HuggingFace repo to pull from.
+    repo: &'static str,
+    /// Pinned commit so a moving `main` branch can't change the bits.
+    revision: &'static str,
+    /// Files to download + verify.
+    files: &'static [ModelFile],
+    /// Which load path this model takes.
+    kind: ModelKind,
+    /// File whose presence in the dir uniquely identifies this model. Used
+    /// both for "already downloaded?" checks and runtime kind detection.
+    marker_file: &'static str,
 }
 
 /// Parakeet TDT 0.6B v3 INT8 — NVIDIA's multilingual successor to v2.
@@ -47,6 +81,38 @@ const PARAKEET_FILES: &[ModelFile] = &[
     },
 ];
 
+/// Whisper large-v3-turbo INT8 — OpenAI's multilingual ASR model (~809M params),
+/// distilled for speed. Supports 99 languages including English and Russian, with
+/// strong robustness on mumbled / fast / disfluent speech at the cost of much
+/// higher CPU latency than Parakeet. Encoder ships with an external 2.4 GB
+/// weights file because the FP32 graph exceeds ONNX's 2 GB protobuf limit; the
+/// int8 graph references it via external_data so it must live alongside the
+/// .onnx file at load time.
+const WHISPER_REPO: &str = "csukuangfj/sherpa-onnx-whisper-turbo";
+const WHISPER_REVISION: &str = "2ca6ff69fc878651b770880507669577ac41c2ff";
+const WHISPER_FILES: &[ModelFile] = &[
+    ModelFile {
+        name: "turbo-encoder.int8.onnx",
+        sha256: "b02dcdf54f348741e93fe732b67d933c8dcb6735655f710640143081db38878b",
+        size: 674_716_297,
+    },
+    ModelFile {
+        name: "turbo-decoder.int8.onnx",
+        sha256: "20accd02388482eb3a46bd615631adfdc85e1eb2c7db9ea3f02a40ffe6b81547",
+        size: 361_080_764,
+    },
+    ModelFile {
+        name: "turbo-encoder.weights",
+        sha256: "746f879ecf066450ab0cdecc05383380b85157270ff6c0a9fb7cfdd917036e12",
+        size: 2_600_325_120,
+    },
+    ModelFile {
+        name: "turbo-tokens.txt",
+        sha256: "b34b360dbb493e781e479794586d661700670d65564001f23024971d1f2fa126",
+        size: 816_730,
+    },
+];
+
 const MOONSHINE_REPO: &str = "csukuangfj/sherpa-onnx-moonshine-tiny-en-int8";
 const MOONSHINE_REVISION: &str = "bf2b762c076d8ea61e2af0b3851c9564fb77552e";
 const MOONSHINE_FILES: &[ModelFile] = &[
@@ -77,6 +143,64 @@ const MOONSHINE_FILES: &[ModelFile] = &[
     },
 ];
 
+/// Registry of every model `incant` knows how to download and load.
+/// Ordering is significant: the first entry is the default if config doesn't
+/// pick one. Adding a new model: append a `ModelDef` literal here, and if it
+/// uses a new `ModelKind`, add a match arm in `SttEngine::new`.
+pub const MODELS: &[ModelDef] = &[
+    ModelDef {
+        name: "parakeet",
+        dir_name: "parakeet-tdt-0.6b-v3-int8",
+        description: "Parakeet TDT 0.6B v3 (25 European languages, ~670 MB, fast — default)",
+        repo: PARAKEET_REPO,
+        revision: PARAKEET_REVISION,
+        files: PARAKEET_FILES,
+        kind: ModelKind::Transducer,
+        marker_file: "encoder.int8.onnx",
+    },
+    ModelDef {
+        name: "whisper",
+        dir_name: "whisper-large-v3-turbo-int8",
+        description: "Whisper large-v3-turbo (99 languages, ~3.4 GB, robust on mumbled / fast speech)",
+        repo: WHISPER_REPO,
+        revision: WHISPER_REVISION,
+        files: WHISPER_FILES,
+        kind: ModelKind::Whisper,
+        marker_file: "turbo-encoder.int8.onnx",
+    },
+    ModelDef {
+        name: "moonshine",
+        dir_name: "moonshine-tiny-en-int8",
+        description: "Moonshine Tiny (English only, ~120 MB, fastest)",
+        repo: MOONSHINE_REPO,
+        revision: MOONSHINE_REVISION,
+        files: MOONSHINE_FILES,
+        kind: ModelKind::Moonshine,
+        marker_file: "preprocess.onnx",
+    },
+];
+
+/// Look up a model definition by its friendly name.
+pub fn find_by_name(name: &str) -> Option<&'static ModelDef> {
+    MODELS.iter().find(|m| m.name == name)
+}
+
+/// Detect which model lives at `dir` by checking for marker files.
+pub fn detect_in_dir(dir: &Path) -> Option<&'static ModelDef> {
+    MODELS.iter().find(|m| dir.join(m.marker_file).exists())
+}
+
+/// Canonical on-disk location for a given model under `<cache_dir>/models/`.
+pub fn model_dir(cache_dir: &Path, def: &ModelDef) -> PathBuf {
+    cache_dir.join("models").join(def.dir_name)
+}
+
+/// Has every required file already been downloaded for this model?
+pub fn is_downloaded(cache_dir: &Path, def: &ModelDef) -> bool {
+    let dir = model_dir(cache_dir, def);
+    def.files.iter().all(|f| dir.join(f.name).exists())
+}
+
 pub struct SttEngine {
     recognizer: sherpa_onnx::OfflineRecognizer,
 }
@@ -84,24 +208,19 @@ pub struct SttEngine {
 impl SttEngine {
     pub fn new(config: &Config) -> Result<Self> {
         let model_path = &config.model_path;
+        let def = detect_in_dir(model_path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "No recognized model files found in {:?}. Run `incant model use <name>` (or `incant-daemon download-model`) first.",
+                model_path
+            )
+        })?;
 
-        if model_path.join("preprocess.onnx").exists()
-            || model_path.join("preprocess.int8.onnx").exists()
-        {
-            info!("Loading Moonshine model from {:?}", model_path);
-            return Self::load_moonshine(model_path, config);
+        info!("Loading {} model from {:?}", def.name, model_path);
+        match def.kind {
+            ModelKind::Transducer => Self::load_transducer(model_path, config),
+            ModelKind::Whisper => Self::load_whisper(model_path, config),
+            ModelKind::Moonshine => Self::load_moonshine(model_path, config),
         }
-
-        if model_path.join("encoder.onnx").exists() || model_path.join("encoder.int8.onnx").exists()
-        {
-            info!("Loading Transducer (Parakeet) model from {:?}", model_path);
-            return Self::load_transducer(model_path, config);
-        }
-
-        anyhow::bail!(
-            "No recognized model files found in {:?}. Run `incant-daemon download-model` first.",
-            model_path
-        )
     }
 
     fn load_moonshine(model_path: &Path, config: &Config) -> Result<Self> {
@@ -126,6 +245,36 @@ impl SttEngine {
 
         let recognizer = sherpa_onnx::OfflineRecognizer::create(&recognizer_config)
             .ok_or_else(|| anyhow::anyhow!("creating Moonshine recognizer failed"))?;
+
+        Ok(SttEngine { recognizer })
+    }
+
+    fn load_whisper(model_path: &Path, config: &Config) -> Result<Self> {
+        let encoder = if model_path.join("turbo-encoder.onnx").exists() {
+            model_path.join("turbo-encoder.onnx")
+        } else {
+            model_path.join("turbo-encoder.int8.onnx")
+        };
+        let decoder = if model_path.join("turbo-decoder.onnx").exists() {
+            model_path.join("turbo-decoder.onnx")
+        } else {
+            model_path.join("turbo-decoder.int8.onnx")
+        };
+        let tokens = model_path.join("turbo-tokens.txt");
+
+        let mut recognizer_config = sherpa_onnx::OfflineRecognizerConfig::default();
+        recognizer_config.model_config.whisper = sherpa_onnx::OfflineWhisperModelConfig {
+            encoder: Some(encoder.to_string_lossy().into()),
+            decoder: Some(decoder.to_string_lossy().into()),
+            ..Default::default()
+        };
+        recognizer_config.model_config.tokens = Some(tokens.to_string_lossy().into());
+        recognizer_config.model_config.provider = Some(detect_provider());
+        recognizer_config.model_config.num_threads = resolve_num_threads(config.num_threads);
+        recognizer_config.decoding_method = Some("greedy_search".into());
+
+        let recognizer = sherpa_onnx::OfflineRecognizer::create(&recognizer_config)
+            .ok_or_else(|| anyhow::anyhow!("creating Whisper recognizer failed"))?;
 
         Ok(SttEngine { recognizer })
     }
@@ -167,12 +316,27 @@ impl SttEngine {
     }
 
     pub fn transcribe(&mut self, samples: &[f32], sample_rate: u32) -> Result<String> {
+        let started = std::time::Instant::now();
+        let audio_secs = samples.len() as f32 / sample_rate as f32;
+
         let stream = self.recognizer.create_stream();
         stream.accept_waveform(sample_rate as i32, samples);
         self.recognizer.decode(&stream);
         let result = stream
             .get_result()
             .ok_or_else(|| anyhow::anyhow!("getting transcription result failed"))?;
+
+        let elapsed_ms = started.elapsed().as_millis();
+        let rtf = if audio_secs > 0.0 {
+            (elapsed_ms as f32 / 1000.0) / audio_secs
+        } else {
+            0.0
+        };
+        info!(
+            "transcribe: {} ms for {:.2}s audio (RTF {:.2}x)",
+            elapsed_ms, audio_secs, rtf
+        );
+
         Ok(result.text)
     }
 }
@@ -226,52 +390,44 @@ fn detect_provider() -> String {
     }
 }
 
+/// Download the model selected by `model_path`'s basename (legacy entry point
+/// used by `incant-daemon download-model`). Falls back to the first registry
+/// entry (Parakeet) if the basename doesn't match any known model — preserves
+/// pre-registry behavior where bare `download-model` pulled the default.
 pub async fn download_model(cache_dir: &Path, model_path: &Path) -> Result<()> {
-    let parakeet_dir = cache_dir.join("models/parakeet-tdt-0.6b-v3-int8");
-    let moonshine_dir = cache_dir.join("models/moonshine-tiny-en-int8");
-
-    // Explicit Moonshine opt-in via filename.
-    if model_path
+    let basename = model_path
         .file_name()
-        .map(|n| n.to_string_lossy().contains("moonshine"))
-        .unwrap_or(false)
-    {
-        if !moonshine_dir.join("preprocess.onnx").exists() {
-            info!("Downloading Moonshine Tiny...");
-            return download_moonshine(&moonshine_dir).await;
-        }
-        info!("Moonshine model already exists at {:?}", moonshine_dir);
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let def = MODELS
+        .iter()
+        .find(|m| m.dir_name == basename)
+        .unwrap_or(&MODELS[0]);
+    download_def(cache_dir, def).await
+}
+
+/// Download a model by friendly name. Used by `incant model use <name>` —
+/// the daemon binary itself goes through `download_model`, so this looks
+/// unused when the bin target is compiled alone.
+#[allow(dead_code)]
+pub async fn download_by_name(cache_dir: &Path, name: &str) -> Result<PathBuf> {
+    let def = find_by_name(name).ok_or_else(|| {
+        let known: Vec<&str> = MODELS.iter().map(|m| m.name).collect();
+        anyhow::anyhow!("unknown model '{}'. Known: {}", name, known.join(", "))
+    })?;
+    download_def(cache_dir, def).await?;
+    Ok(model_dir(cache_dir, def))
+}
+
+async fn download_def(cache_dir: &Path, def: &ModelDef) -> Result<()> {
+    let dir = model_dir(cache_dir, def);
+    if is_downloaded(cache_dir, def) {
+        info!("{} model already exists at {:?}", def.name, dir);
         return Ok(());
     }
-
-    // Default to Parakeet-TDT-0.6B-v3 int8 — multilingual (25 European languages), ~670 MB total.
-    let has_encoder = parakeet_dir.join("encoder.int8.onnx").exists();
-    let has_decoder = parakeet_dir.join("decoder.int8.onnx").exists();
-    let has_joiner = parakeet_dir.join("joiner.int8.onnx").exists();
-    let has_tokens = parakeet_dir.join("tokens.txt").exists();
-    if !(has_encoder && has_decoder && has_joiner && has_tokens) {
-        info!("Downloading Parakeet-TDT-0.6B-v3 (int8, multilingual)...");
-        return download_parakeet(&parakeet_dir).await;
-    }
-    info!("Parakeet model already exists at {:?}", parakeet_dir);
-    Ok(())
-}
-
-async fn download_parakeet(model_dir: &Path) -> Result<()> {
-    download_model_files(model_dir, PARAKEET_REPO, PARAKEET_REVISION, PARAKEET_FILES).await?;
-    info!("Parakeet model downloaded to {:?}", model_dir);
-    Ok(())
-}
-
-async fn download_moonshine(model_dir: &Path) -> Result<()> {
-    download_model_files(
-        model_dir,
-        MOONSHINE_REPO,
-        MOONSHINE_REVISION,
-        MOONSHINE_FILES,
-    )
-    .await?;
-    info!("Moonshine model downloaded to {:?}", model_dir);
+    info!("Downloading {} ({})...", def.name, def.description);
+    download_model_files(&dir, def.repo, def.revision, def.files).await?;
+    info!("{} model downloaded to {:?}", def.name, dir);
     Ok(())
 }
 

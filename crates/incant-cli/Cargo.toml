@@ -18,6 +18,9 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+toml_edit = "0.22"
 dirs = "6"
 which = "7"
+# Shared model registry + download logic
+incant-daemon = { path = "../incant-daemon" }
 # IPC - using tokio Unix sockets directly

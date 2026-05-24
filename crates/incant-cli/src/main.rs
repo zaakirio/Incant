@@ -1,4 +1,5 @@
 mod doctor;
+mod model;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -36,6 +37,20 @@ enum Commands {
     Stop,
     /// Run diagnostic checks.
     Doctor,
+    /// Manage STT models (list / switch).
+    #[command(subcommand)]
+    Model(ModelCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelCmd {
+    /// List known models (downloaded ✓, active ●).
+    List,
+    /// Switch to a model by name (downloads if needed). Restart daemon to apply.
+    Use {
+        /// Friendly model name, e.g. "parakeet", "whisper", "moonshine".
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +113,8 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Commands::Doctor) => doctor::run().await,
+        Some(Commands::Model(ModelCmd::List)) => model::list(),
+        Some(Commands::Model(ModelCmd::Use { name })) => model::use_model(&name).await,
         Some(cmd) => {
             let ipc_cmd = match cmd {
                 Commands::Press => IpcCommand::Press,

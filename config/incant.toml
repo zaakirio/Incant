@@ -1,11 +1,19 @@
 # Incant — Voice Dictation for Omarchy
 # Config location: ~/.config/incant/config.toml
 
-# Path to the ONNX model directory.
-# If not set, defaults to ~/.cache/incant/models/parakeet-tdt-0.6b-v3-int8
-# (Parakeet-TDT-0.6B-v2, more accurate, ~630 MB). To use the smaller Moonshine
-# model instead, set the path so its basename contains "moonshine":
-# model_path = "/home/USER/.cache/incant/models/moonshine-tiny-en-int8"
+# Which STT model to load. Friendly names: "parakeet", "whisper", "moonshine".
+# Use `incant model list` to see what's installed, and `incant model use <name>`
+# to switch (downloads if needed, edits this field for you).
+#
+#   parakeet  — TDT 0.6B v3, 25 European languages, ~670 MB, fast (default)
+#   whisper   — large-v3-turbo, 99 languages, ~3.4 GB, robust on mumbled speech
+#   moonshine — Tiny, English only, ~120 MB, fastest
+#
+# model = "parakeet"
+#
+# Escape hatch: if you need to point at a model directory we don't know about,
+# set `model_path` to an absolute path instead. `model` takes precedence.
+# model_path = "/home/USER/.cache/incant/models/parakeet-tdt-0.6b-v3-int8"
 
 # Sample rate the model expects (do not change unless you know what you're doing).
 sample_rate = 16000
