@@ -1,0 +1,14 @@
+.DS_Store
+# engine
+engine/.venv/
+engine/dist/
+engine/*.egg-info/
+__pycache__/
+*.pyc
+# app
+app/build/
+app/build-dist/
+app/dist/
+app/*.xcodeproj/
+app/DerivedData/
+app/node_modules/
