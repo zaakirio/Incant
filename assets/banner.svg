@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0e0e13"/>
+      <stop offset="1" stop-color="#1a1723"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#7c5cf0"/>
+    </linearGradient>
+    <linearGradient id="wordmark" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d6ccff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="340" rx="24" fill="url(#bg)"/>
+  <g>
+    <rect x="660.0" y="160.0" width="9" height="16.0" rx="4.5" fill="url(#wave)" opacity="0.50"/>
+    <rect x="677.0" y="150.4" width="9" height="35.3" rx="4.5" fill="url(#wave)" opacity="0.57"/>
+    <rect x="694.0" y="139.1" width="9" height="57.8" rx="4.5" fill="url(#wave)" opacity="0.64"/>
+    <rect x="711.0" y="136.9" width="9" height="62.3" rx="4.5" fill="url(#wave)" opacity="0.71"/>
+    <rect x="728.0" y="145.8" width="9" height="44.5" rx="4.5" fill="url(#wave)" opacity="0.77"/>
+    <rect x="745.0" y="154.6" width="9" height="26.8" rx="4.5" fill="url(#wave)" opacity="0.83"/>
+    <rect x="762.0" y="148.5" width="9" height="38.9" rx="4.5" fill="url(#wave)" opacity="0.88"/>
+    <rect x="779.0" y="124.8" width="9" height="86.4" rx="4.5" fill="url(#wave)" opacity="0.92"/>
+    <rect x="796.0" y="98.1" width="9" height="139.8" rx="4.5" fill="url(#wave)" opacity="0.95"/>
+    <rect x="813.0" y="89.0" width="9" height="158.0" rx="4.5" fill="url(#wave)" opacity="0.98"/>
+    <rect x="830.0" y="105.4" width="9" height="125.2" rx="4.5" fill="url(#wave)" opacity="0.99"/>
+    <rect x="847.0" y="134.2" width="9" height="67.6" rx="4.5" fill="url(#wave)" opacity="1.00"/>
+    <rect x="864.0" y="151.9" width="9" height="32.1" rx="4.5" fill="url(#wave)" opacity="0.99"/>
+    <rect x="881.0" y="145.1" width="9" height="45.8" rx="4.5" fill="url(#wave)" opacity="0.98"/>
+    <rect x="898.0" y="121.4" width="9" height="93.1" rx="4.5" fill="url(#wave)" opacity="0.95"/>
+    <rect x="915.0" y="102.5" width="9" height="131.0" rx="4.5" fill="url(#wave)" opacity="0.92"/>
+    <rect x="932.0" y="104.2" width="9" height="127.6" rx="4.5" fill="url(#wave)" opacity="0.88"/>
+    <rect x="949.0" y="124.2" width="9" height="87.6" rx="4.5" fill="url(#wave)" opacity="0.83"/>
+    <rect x="966.0" y="146.3" width="9" height="43.4" rx="4.5" fill="url(#wave)" opacity="0.77"/>
+    <rect x="983.0" y="156.7" width="9" height="22.7" rx="4.5" fill="url(#wave)" opacity="0.71"/>
+    <rect x="1000.0" y="155.5" width="9" height="25.0" rx="4.5" fill="url(#wave)" opacity="0.64"/>
+    <rect x="1017.0" y="153.9" width="9" height="28.2" rx="4.5" fill="url(#wave)" opacity="0.57"/>
+  </g>
+  <text x="64" y="150" font-size="88" font-weight="800" letter-spacing="-2" fill="url(#wordmark)">Incant</text>
+  <text x="68" y="196" font-size="27" font-weight="500" fill="#b9b3cc">Give your coding agents a voice.</text>
+  <text x="68" y="236" font-size="18" font-weight="500" fill="#6f6a85" letter-spacing="0.5">Local TTS narration for Claude Code &#183; Codex &#183; OpenCode</text>
+</svg>
