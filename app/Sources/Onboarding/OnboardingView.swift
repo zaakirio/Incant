@@ -24,9 +24,12 @@ struct OnboardingView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "waveform")
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
+            Image("IncantIcon")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(height: 34)
+                .foregroundStyle(Color.incantViolet)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Set up Incant").font(.system(size: 17, weight: .bold))
                 Text("Give your coding agents a voice.").font(.system(size: 12)).foregroundStyle(.secondary)

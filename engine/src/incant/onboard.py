@@ -124,6 +124,12 @@ def run_interactive_install(tools: list[str], yes: bool = False) -> int:
         color = "yellow" if "SKIPPED" in message else "green"
         console.print(f"[{color}]✓[/] {message}")
 
+    from .install import ensure_spacy_model
+
+    with console.status("[cyan]Preparing the voice frontend…[/]"):
+        ok, detail = ensure_spacy_model()
+    console.print(f"[{'green' if ok else 'red'}]{'✓' if ok else '✗'}[/] voice frontend: {detail}")
+
     cfg = load_config()
     cached = _hf_model_cached(cfg.tts_model)
     if not cached:

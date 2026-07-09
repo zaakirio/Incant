@@ -525,6 +525,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     async def startup() -> None:
         state.speaker.start_managed_tts()
         asyncio.get_event_loop().create_task(state.speaker.worker())
+        # Self-heal the voice frontend: a `uv tool upgrade` wipes the spaCy
+        # model (it isn't a package dep), which would silently break synthesis.
+        asyncio.create_task(_ensure_voice_frontend())
 
     @app.on_event("shutdown")
     async def shutdown() -> None:
@@ -672,6 +675,16 @@ def create_app(cfg: Config | None = None) -> FastAPI:
         return state.kill(key)
 
     return app
+
+
+async def _ensure_voice_frontend() -> None:
+    from .install import ensure_spacy_model, spacy_model_present
+
+    if spacy_model_present():
+        return
+    log.info("voice frontend (spaCy model) missing; installing…")
+    ok, detail = await asyncio.to_thread(ensure_spacy_model)
+    log.info("voice frontend: %s (%s)", "ready" if ok else "FAILED", detail)
 
 
 def run_daemon(foreground: bool = True) -> None:

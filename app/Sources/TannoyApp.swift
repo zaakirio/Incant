@@ -70,20 +70,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateIcon() {
         guard let button = statusItem.button else { return }
-        let name: String
-        let hasUnread = Self.client.sessions.contains { $0.unread }
-        if !Self.client.connected {
-            name = "waveform.slash"
-        } else if Self.client.muted {
-            name = "speaker.slash.fill"
-        } else if hasUnread {
-            name = "waveform.badge.exclamationmark"
-        } else {
-            name = "waveform"
+        // Custom Incant wand glyph as a template image (adapts to light/dark
+        // and the system's active tint); state is shown via opacity.
+        let icon = NSImage(named: "IncantIcon") ?? NSImage(systemSymbolName: "waveform", accessibilityDescription: "Incant")
+        icon?.isTemplate = true
+        // Fill the menu-bar height, preserving the wand's tall aspect (snug, like Hex).
+        if let natural = icon?.size, natural.height > 0 {
+            let h: CGFloat = 19
+            icon?.size = NSSize(width: (h * natural.width / natural.height).rounded(), height: h)
         }
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: "Incant")
-        image?.isTemplate = true
-        button.image = image
+        button.image = icon
+        button.alphaValue = !Self.client.connected ? 0.35 : (Self.client.muted ? 0.45 : 1.0)
+        button.toolTip = !Self.client.connected ? "Incant — engine offline"
+            : (Self.client.muted ? "Incant — muted" : "Incant")
     }
 
     @objc private func togglePopover() {

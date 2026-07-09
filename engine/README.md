@@ -105,23 +105,70 @@ Any TTS model mlx-audio supports works via `[tts] model`, including voice-clonin
 
 ## Configuration
 
-`~/.config/incant/config.toml`, created on install. Speech settings apply live - no restart:
+Everything lives in one file: **`~/.config/incant/config.toml`**.
+
+- It's created for you on `incant install` with sensible defaults, so you only edit it to change something.
+- **Speech settings apply live** - the daemon re-reads the file before every narration, so edits to voices, mode, behavior, and speed take effect on the next turn with no restart. (Only the daemon/TTS *ports* are read once at startup.)
+- Every key is optional; anything you omit falls back to the default shown below.
+- Prefer not to hand-edit? The menu bar app writes the same file, and the CLI does too: `incant mode tldr`, `incant behavior notify`, `incant mute 30m`.
+
+Here is the full file, annotated:
 
 ```toml
+[daemon]
+port = 5111                      # HTTP/SSE port the app and hooks talk to
+
 [tts]
-model = "mlx-community/Kokoro-82M-bf16"
-voice = "af_heart"      # default for sources without a [voices] entry
-speed = 1.1
+mode = "managed"                 # "managed" = incant runs the local mlx-audio server;
+                                 # "remote"  = use an external endpoint (see Remote mode)
+port = 5112                      # port for the managed mlx-audio server
+model = "mlx-community/Kokoro-82M-bf16"   # any TTS model mlx-audio supports
+voice = "af_heart"               # default voice for agents without a [voices] entry
+speed = 1.1                      # 0.7 slow ... 1.5 fast
+
+[voices]
+# One voice per agent, so you can tell who's speaking without looking.
+claude   = "af_heart"            # American, female
+codex    = "am_michael"          # American, male
+opencode = "bf_emma"             # British, female
 
 [speech]
-mode = "full"           # full | tldr | summary
-max_chars = 700
+mode = "full"                    # how MUCH is spoken: full | tldr | summary
+max_chars = 700                  # replies longer than this get shortened
+
+[narration]
+behavior = "auto"                # WHETHER/WHEN it speaks: auto | notify | off
+
+[narration.providers]
+# Per-agent overrides of the behavior above, e.g.:
+# codex = "notify"               # Codex stays silent, just flags unread
 
 [summarizer]
-# used by "summary" mode; any OpenAI-compatible chat endpoint
-# url = "http://127.0.0.1:8080"
+# Only used by [speech] mode = "summary". Any OpenAI-compatible chat endpoint.
+# url   = "http://127.0.0.1:8080"
 # model = "default"
 ```
+
+### The two independent axes
+
+Incant separates *how much* is spoken from *whether* it speaks - mixing them covers most needs:
+
+- `[speech] mode` - **how much**: `full` (the cleaned reply), `tldr` (only a final `TLDR:` line), `summary` (LLM-compressed).
+- `[narration] behavior` - **whether/when**: `auto` (speak now), `notify` (stay silent, mark the session unread, speak on demand), `off` (never).
+
+### Set it up for your workflow
+
+Pick the recipe that matches how you work and edit the file (or use the CLI/menu bar):
+
+- **"I just want short spoken updates."** Add the `TLDR:` snippet above to your `CLAUDE.md`/`AGENTS.md`, then set `[speech] mode = "tldr"` (or run `incant mode tldr`).
+- **"Codex should stay quiet, Claude should talk."** Under `[narration.providers]` add `codex = "off"` (or `"notify"`); leave `[narration] behavior = "auto"` for the rest.
+- **"I run long autonomous tasks I don't want narrated step by step."** Set `[narration] behavior = "notify"` - sessions go silent and just show an unread dot; click the bubble (or `incant sessions` then the app) to hear the latest on demand. Keep short/interactive sessions on `auto` by flipping them per-session in the menu bar.
+- **"I want a British male voice for everything."** Set `[tts] voice = "bm_george"` and clear the `[voices]` table (or set each agent). List voices: `curl 'localhost:5112/v1/audio/voices?model=mlx-community/Kokoro-82M-bf16'`.
+- **"Narration talks too fast / too slow."** Adjust `[tts] speed` (0.7-1.5).
+- **"I'm going into a meeting."** `incant mute 30m` (drops narrations for 30 minutes; sessions still collect unread), or `incant mute` until you `incant unmute`.
+- **"I want a bigger/better voice than my Mac can run."** Use Remote mode below to point at a GPU box.
+
+After any edit, the next agent turn uses it - or run `incant doctor` to confirm the pipeline is healthy.
 
 ### Remote mode
 
@@ -131,7 +178,7 @@ Point incant at any OpenAI-compatible speech endpoint instead of the managed loc
 [tts]
 mode = "remote"
 url = "https://your-gpu-box:8000"
-api_key = "..."
+api_key = "..."                  # sent as a bearer token
 model = "your-model"
 ```
 

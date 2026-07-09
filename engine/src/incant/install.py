@@ -11,10 +11,52 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from .config import load_config, write_default_config
+
+# misaki's English g2p needs this spaCy model. Pinned to the wheel that matches
+# spaCy 3.8; `spacy download` needs pip (absent in a uv tool env), so we install
+# the wheel with `uv pip install --python <this interpreter>`.
+SPACY_MODEL = "en_core_web_sm"
+SPACY_WHEEL = (
+    "https://github.com/explosion/spacy-models/releases/download/"
+    "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+)
+
+
+def spacy_model_present() -> bool:
+    try:
+        import spacy  # noqa: F401
+        from spacy.util import is_package
+
+        return bool(is_package(SPACY_MODEL))
+    except Exception:
+        return False
+
+
+def ensure_spacy_model() -> tuple[bool, str]:
+    """Make misaki's English voice frontend usable. Returns (ok, detail)."""
+    if spacy_model_present():
+        return True, "already installed"
+    uv = shutil.which("uv")
+    if uv:
+        proc = subprocess.run(
+            [uv, "pip", "install", "--python", sys.executable, SPACY_WHEEL],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0 and spacy_model_present():
+            return True, "installed via uv pip"
+    # Fallback for non-uv installs (pipx/pip venvs), where spacy's own downloader works.
+    proc = subprocess.run(
+        [sys.executable, "-m", "spacy", "download", SPACY_MODEL],
+        capture_output=True, text=True,
+    )
+    if proc.returncode == 0 and spacy_model_present():
+        return True, "installed via spacy download"
+    return False, "could not install; run: uv pip install --python $(which incant-python) " + SPACY_WHEEL
 
 CLAUDE_SETTINGS = Path("~/.claude/settings.json").expanduser()
 CODEX_CONFIG = Path("~/.codex/config.toml").expanduser()

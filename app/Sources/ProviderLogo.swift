@@ -1,5 +1,10 @@
 import SwiftUI
 
+extension Color {
+    /// Incant brand violet (from the logo / banner).
+    static let incantViolet = Color(red: 0.549, green: 0.427, blue: 0.965)  // #8c6df6
+}
+
 /// A provider mark that activates to its brand color. Muted (or grayscale)
 /// at rest, full brand color when `active` (hovered / emphasized). Marks
 /// without a brand color activate to the foreground instead.

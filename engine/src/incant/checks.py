@@ -43,6 +43,11 @@ def doctor_checks() -> list[dict]:
     checks.append({"id": "model", "title": "Voice model", "ok": _hf_model_cached(cfg.tts_model),
                    "detail": cfg.tts_model})
 
+    from .install import spacy_model_present
+
+    checks.append({"id": "g2p", "title": "Voice frontend", "ok": spacy_model_present(),
+                   "detail": "spaCy en_core_web_sm (misaki g2p)"})
+
     player = shutil.which("afplay") or shutil.which("ffplay") or shutil.which("aplay")
     checks.append({"id": "player", "title": "Audio player", "ok": bool(player),
                    "detail": player or "afplay/ffplay/aplay"})
