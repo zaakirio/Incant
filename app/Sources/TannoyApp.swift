@@ -22,11 +22,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sinks: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        // Variable length: the icon grows a small badge ("●2") when
+        // sessions are waiting on the user.
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover)
+            button.imagePosition = .imageLeft
         }
+        NotificationManager.shared.setup()
         updateIcon()
 
         // Icon reflects live state: muted, disconnected, or unread.
@@ -81,8 +85,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         button.image = icon
         button.alphaValue = !Self.client.connected ? 0.35 : (Self.client.muted ? 0.45 : 1.0)
-        button.toolTip = !Self.client.connected ? "Incant — engine offline"
+
+        // Aggregate session state as a badge: blocked-on-you beats working.
+        let attention = Self.client.sessions.filter { $0.sessionStatus.needsAttention }.count
+        let working = Self.client.sessions.filter { $0.sessionStatus == .working }.count
+        if attention > 0, Self.client.connected {
+            button.attributedTitle = NSAttributedString(
+                string: " ●\(attention)",
+                attributes: [
+                    .foregroundColor: NSColor.systemOrange,
+                    .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                ]
+            )
+        } else if working > 0, Self.client.connected {
+            button.attributedTitle = NSAttributedString(
+                string: " …",
+                attributes: [
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .font: NSFont.systemFont(ofSize: 11, weight: .bold),
+                ]
+            )
+        } else {
+            button.title = ""
+        }
+
+        var tip = !Self.client.connected ? "Incant — engine offline"
             : (Self.client.muted ? "Incant — muted" : "Incant")
+        if attention > 0 { tip += " — \(attention) waiting for you" }
+        else if working > 0 { tip += " — \(working) working" }
+        button.toolTip = tip
     }
 
     @objc private func togglePopover() {

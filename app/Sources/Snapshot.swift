@@ -14,22 +14,33 @@ enum Snapshot {
             voice: "af_heart",
             speed: 1.1,
             maxChars: 700,
-            voices: ["claude": "af_heart", "codex": "am_michael", "opencode": "bf_emma"],
-            ttsModel: "mlx-community/Kokoro-82M-bf16"
+            voices: ["claude": "af_heart", "codex": "am_michael", "opencode": "bf_emma", "kimi": "bm_george"],
+            ttsModel: "mlx-community/Kokoro-82M-bf16",
+            providerBehaviors: nil
         )
         client.availableVoices = ["af_heart", "af_bella", "am_michael", "am_onyx", "bf_emma", "bm_george"]
         client.sessions = [
             Session(key: "claude:a1", source: "claude", sessionId: "a1",
                     cwd: "/Users/z/dev/incant", project: "incant", pid: 4201, canKill: true,
                     behavior: "auto", behaviorOverride: nil, unread: false, speaking: true,
+                    status: "idle", statusDetail: nil, statusSince: 0, parentKey: nil, subagents: 0,
                     lastSeen: 0, lastText: "Refactor complete.", history: []),
             Session(key: "codex:b2", source: "codex", sessionId: "b2",
                     cwd: "/Users/z/dev/crucible", project: "crucible", pid: 4310, canKill: true,
                     behavior: "notify", behaviorOverride: "notify", unread: true, speaking: false,
+                    status: "awaiting_approval", statusDetail: "wants to use Bash", statusSince: 0,
+                    parentKey: nil, subagents: 0,
                     lastSeen: 0, lastText: "Tests pass.", history: []),
+            Session(key: "kimi:d4", source: "kimi", sessionId: "d4",
+                    cwd: "/Users/z/dev/swarm-lab", project: "swarm-lab", pid: 4402, canKill: true,
+                    behavior: "auto", behaviorOverride: nil, unread: false, speaking: false,
+                    status: "working", statusDetail: "running coder", statusSince: 0,
+                    parentKey: nil, subagents: 5,
+                    lastSeen: 0, lastText: nil, history: []),
             Session(key: "opencode:c3", source: "opencode", sessionId: "c3",
                     cwd: "/Users/z/dev/inf-eng", project: "inf-eng", pid: nil, canKill: false,
                     behavior: "off", behaviorOverride: "off", unread: false, speaking: false,
+                    status: "idle", statusDetail: nil, statusSince: 0, parentKey: nil, subagents: 0,
                     lastSeen: 0, lastText: nil, history: []),
         ]
         return client

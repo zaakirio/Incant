@@ -74,7 +74,7 @@ private struct SessionsSection: View {
         VStack(alignment: .leading, spacing: 0) {
             SectionLabel("ACTIVE SESSIONS")
             if client.sessions.isEmpty {
-                Text("No active sessions. Finish a turn in Claude Code, Codex, or OpenCode.")
+                Text("No active sessions. Finish a turn in Claude Code, Codex, OpenCode, or Kimi.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 14)
@@ -108,13 +108,24 @@ private struct SessionRow: View {
                         .truncationMode(.tail)
                     if session.unread {
                         Circle().fill(Color.red).frame(width: 7, height: 7)
+                    } else if session.sessionStatus.needsAttention {
+                        Circle().fill(Color.orange).frame(width: 7, height: 7)
                     }
                 }
-                Text(AgentStyle.label(session.source))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(AgentStyle.label(session.source))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    if let statusText {
+                        Text("· \(statusText)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(session.sessionStatus.needsAttention ? Color.orange : Color.secondary)
+                            .lineLimit(1)
+                            .help(session.statusDetail ?? "")
+                    }
+                }
             }
-            .frame(maxWidth: 150, alignment: .leading)
+            .frame(maxWidth: 170, alignment: .leading)
 
             Spacer(minLength: 6)
 
@@ -147,8 +158,27 @@ private struct SessionRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)
-        .background(hovering ? Color.primary.opacity(0.05) : .clear)
+        .background(rowBackground)
         .onHover { hovering = $0 }
+    }
+
+    private var rowBackground: Color {
+        if hovering { return Color.primary.opacity(0.05) }
+        if session.sessionStatus.needsAttention { return Color.orange.opacity(0.08) }
+        return .clear
+    }
+
+    /// Second-line status: "working…", "needs approval", swarm size.
+    private var statusText: String? {
+        switch session.sessionStatus {
+        case .working:
+            // A live swarm implies working; the count is the news.
+            return session.subagentCount > 0 ? "\(session.subagentCount) agents working" : "working…"
+        case .awaitingApproval, .awaitingInput:
+            return session.sessionStatus.label.lowercased()
+        case .idle:
+            return session.subagentCount > 0 ? "\(session.subagentCount) agents" : nil
+        }
     }
 }
 
@@ -223,6 +253,9 @@ private struct VoiceSection: View {
 private struct DefaultsSection: View {
     @EnvironmentObject var client: DaemonClient
 
+    @AppStorage(NotificationManager.turnCompleteKey) private var notifyTurns = true
+    @AppStorage(NotificationManager.attentionKey) private var notifyAttention = true
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionLabel("DEFAULTS")
@@ -253,6 +286,15 @@ private struct DefaultsSection: View {
                 .labelsHidden()
                 .frame(width: 200)
             }
+            .padding(.horizontal, 14)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Notify when a turn finishes", isOn: $notifyTurns)
+                Toggle("Notify when an agent needs approval or input", isOn: $notifyAttention)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .font(.system(size: 12))
             .padding(.horizontal, 14)
             .padding(.bottom, 12)
         }

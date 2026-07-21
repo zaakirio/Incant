@@ -39,13 +39,41 @@ def main(argv: list[str] | None = None) -> int:
 
     # Hook paths must stay import-light and never fail the agent's turn.
     if argv[:2] == ["hook", "claude"]:
+        if len(argv) > 2:
+            from .hooks import hook_agent_event
+
+            return hook_agent_event("claude", argv[2])
         from .hooks import hook_claude
 
         return hook_claude()
     if argv[:2] == ["hook", "codex"]:
+        # Codex's notify program passes a JSON payload as the argument;
+        # our lifecycle hooks pass a bare kind (prompt, permission, ...).
+        if len(argv) > 2 and not argv[2].lstrip().startswith("{"):
+            from .hooks import hook_agent_event
+
+            return hook_agent_event("codex", argv[2])
         from .hooks import hook_codex
 
         return hook_codex(argv[2:])
+    if argv[:2] == ["hook", "kimi"]:
+        if len(argv) > 2:
+            from .hooks import hook_agent_event
+
+            return hook_agent_event("kimi", argv[2])
+        from .hooks import hook_kimi
+
+        return hook_kimi()
+    if argv[:1] == ["_activity"]:
+        import json as _json
+
+        from .hooks import deliver_activity
+
+        try:
+            body = _json.loads(argv[argv.index("--body") + 1])
+        except Exception:
+            return 0
+        return deliver_activity(body)
     if argv[:1] == ["_deliver"]:
         import json as _json
 
@@ -73,11 +101,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("serve", help="run the narration daemon in the foreground")
 
     p_install = sub.add_parser("install", help="wire incant into your coding tools (interactive)")
-    p_install.add_argument("tools", nargs="*", help="claude, codex, opencode (default: choose from detected)")
+    p_install.add_argument("tools", nargs="*", help="claude, codex, opencode, kimi (default: choose from detected)")
     p_install.add_argument("--yes", "-y", action="store_true", help="no prompts; install for all detected tools")
 
     p_uninstall = sub.add_parser("uninstall", help="remove incant from your coding tools")
-    p_uninstall.add_argument("tools", nargs="*", help="claude, codex, opencode (default: all)")
+    p_uninstall.add_argument("tools", nargs="*", help="claude, codex, opencode, kimi (default: all)")
     p_uninstall.add_argument("--yes", "-y", action="store_true", help="no prompts")
 
     p_speak = sub.add_parser("speak", help="speak text verbatim (also warms up the model)")
@@ -172,10 +200,18 @@ def main(argv: list[str] | None = None) -> int:
         if not sessions:
             print("No active sessions.")
             return 0
+        status_glyphs = {"working": "…", "awaiting_approval": "?", "awaiting_input": "?"}
         for s in sessions:
-            dot = "●" if s["unread"] else ("♪" if s["speaking"] else " ")
+            dot = "●" if s["unread"] else ("♪" if s["speaking"] else status_glyphs.get(s.get("status", ""), " "))
             kill = "" if s["can_kill"] else "  (no kill)"
-            print(f" {dot} {s['source']:<9} {s['project']:<18} {s['behavior']:<7} pid={s['pid']}{kill}")
+            extras = []
+            status = s.get("status", "idle")
+            if status != "idle":
+                extras.append(status + (f": {s['status_detail']}" if s.get("status_detail") else ""))
+            if s.get("subagents"):
+                extras.append(f"{s['subagents']} subagents")
+            extra = ("  " + "; ".join(extras)) if extras else ""
+            print(f" {dot} {s['source']:<9} {s['project']:<18} {s['behavior']:<7} pid={s['pid']}{kill}{extra}")
         return 0
 
     if args.command == "mute":
@@ -213,7 +249,14 @@ def main(argv: list[str] | None = None) -> int:
 
         from .config import CONFIG_PATH, load_config
         from .hooks import _daemon_url, daemon_alive
-        from .install import CLAUDE_SETTINGS, CODEX_CONFIG, detect_tools, opencode_plugin_path
+        from .install import (
+            CLAUDE_SETTINGS,
+            CODEX_CONFIG,
+            KIMI_MARKER,
+            detect_tools,
+            kimi_config_path,
+            opencode_plugin_path,
+        )
 
         cfg = load_config()
         health = {}
@@ -240,7 +283,14 @@ def main(argv: list[str] | None = None) -> int:
         codex_text = CODEX_CONFIG.read_text() if CODEX_CONFIG.exists() else ""
         codex_installed = "incant" in codex_text and "notify" in codex_text
         opencode_installed = opencode_plugin_path().exists()
-        for name, installed in (("claude", claude_installed), ("codex", codex_installed), ("opencode", opencode_installed)):
+        kimi_config = kimi_config_path()
+        kimi_installed = kimi_config.exists() and KIMI_MARKER in kimi_config.read_text()
+        for name, installed in (
+            ("claude", claude_installed),
+            ("codex", codex_installed),
+            ("opencode", opencode_installed),
+            ("kimi", kimi_installed),
+        ):
             state = "hooked" if installed else ("detected, not hooked" if detected[name] else "not detected")
             print(f"{name + ':':<9} {state}")
         return 0

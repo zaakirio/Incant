@@ -16,6 +16,7 @@ Deliberately stdlib-only on the hot path.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -28,6 +29,7 @@ AGENT_PROCESS_HINTS = {
     "claude": ("claude",),
     "codex": ("codex",),
     "opencode": ("opencode",),
+    "kimi": ("kimi",),
 }
 
 
@@ -82,6 +84,53 @@ def _spawn_deliver(text: str, source: str, meta: dict) -> None:
     )
     proc.stdin.write(text.encode())
     proc.stdin.close()
+
+
+def _spawn_activity(source: str, status: str, meta: dict, detail: str | None = None,
+                    subagent_delta: int | None = None) -> None:
+    """Deliver a session status signal via a detached child.
+
+    The child boots the daemon if needed — deliberately: an activity ping
+    at turn start warms the daemon and TTS server, so the narration at
+    turn end plays without a cold-start delay.
+    """
+    body = dict(meta)
+    body.update({"source": source, "status": status})
+    if detail:
+        body["detail"] = detail
+    if subagent_delta:
+        body["subagent_delta"] = subagent_delta
+    subprocess.Popen(
+        [sys.executable, "-m", "incant.cli", "_activity", "--body", json.dumps(body)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _throttled(source: str, session_id: str, seconds: float = 20.0) -> bool:
+    """True if a keepalive ping for this session fired within `seconds`.
+
+    High-frequency hooks (PostToolUse fires per tool call) only exist to
+    keep 'working' fresh; a touch-file mtime check keeps the hot path at
+    one os.stat instead of a daemon round-trip per call.
+    """
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:80]
+    from .config import STATE_DIR
+
+    path = STATE_DIR / f"activity-{source}-{safe}"
+    now = time.time()
+    try:
+        if now - path.stat().st_mtime < seconds:
+            return True
+    except OSError:
+        pass
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except OSError:
+        pass
+    return False
 
 
 # -- Claude Code (Stop hook) ------------------------------------------
@@ -169,6 +218,109 @@ def hook_codex(argv: list[str]) -> int:
     return 0
 
 
+# -- Kimi CLI (Stop hook, Claude-style payload) --------------------------
+
+
+def hook_kimi() -> int:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+    if payload.get("stop_hook_active"):
+        return 0
+    text = payload.get("last_assistant_message") or payload.get("response") or ""
+    meta = {
+        "session_id": payload.get("session_id"),
+        "cwd": payload.get("cwd") or os.getcwd(),
+        "pid": find_agent_pid("kimi"),
+    }
+    if text:
+        _spawn_deliver(text, "kimi", meta)
+    elif meta["session_id"]:
+        # No text in the payload: still mark the turn finished.
+        _spawn_activity("kimi", "idle", meta)
+    return 0
+
+
+# -- lifecycle events (shared: Claude, Kimi, and Codex hooks all use the
+#    same Claude-style stdin JSON contract) ------------------------------
+
+# Notification hook types that mean "the agent is waiting on the user".
+_INPUT_NOTIFICATION_TYPES = ("agent_needs_input", "idle_prompt", "elicitation_dialog")
+
+
+def _unthrottle(source: str, session_id: str) -> None:
+    """Drop the keepalive throttle so the next 'working' ping goes
+    through immediately — used when leaving an awaiting_* state, which
+    must not linger for the throttle window after the user responds."""
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)[:80]
+    from .config import STATE_DIR
+
+    with contextlib.suppress(OSError):
+        (STATE_DIR / f"activity-{source}-{safe}").unlink()
+
+
+def hook_agent_event(source: str, kind: str) -> int:
+    """One entrypoint for every lifecycle hook that isn't a finished turn.
+
+    kind is set at install time per hook event:
+      prompt          UserPromptSubmit        -> working
+      tool            PostToolUse             -> working (throttled keepalive)
+      permission      PermissionRequest       -> awaiting_approval
+      notify          Notification            -> awaiting_approval / awaiting_input
+      question        PreToolUse[AskUserQuestion] -> awaiting_input
+      subagent-start  SubagentStart           -> subagent count +1
+      subagent-stop   SubagentStop            -> subagent count -1
+      fail            StopFailure             -> idle (with the error as detail)
+      end             SessionEnd              -> session removed
+    """
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    session_id = payload.get("session_id")
+    if not session_id:
+        return 0
+    meta = {
+        "session_id": session_id,
+        "cwd": payload.get("cwd") or os.getcwd(),
+        "pid": find_agent_pid(source),
+    }
+    if kind == "prompt":
+        _spawn_activity(source, "working", meta)
+    elif kind == "tool":
+        if not _throttled(source, session_id):
+            _spawn_activity(source, "working", meta)
+    elif kind == "permission":
+        _unthrottle(source, session_id)
+        tool = payload.get("tool_name") or ""
+        detail = f"wants to use {tool}" if tool else "waiting for permission"
+        _spawn_activity(source, "awaiting_approval", meta, detail=detail)
+    elif kind == "notify":
+        ntype = payload.get("notification_type") or ""
+        message = payload.get("message") or payload.get("body") or ""
+        if ntype == "permission_prompt" or "permission" in message.lower():
+            _unthrottle(source, session_id)
+            _spawn_activity(source, "awaiting_approval", meta, detail=message or None)
+        elif ntype in _INPUT_NOTIFICATION_TYPES or "waiting for your input" in message.lower():
+            _unthrottle(source, session_id)
+            _spawn_activity(source, "awaiting_input", meta, detail=message or None)
+    elif kind == "question":
+        _unthrottle(source, session_id)
+        _spawn_activity(source, "awaiting_input", meta, detail="asking a question")
+    elif kind == "subagent-start":
+        name = payload.get("agent_name") or payload.get("agent_type") or ""
+        detail = f"running {name}" if name else "running subagents"
+        _spawn_activity(source, "working", meta, detail=detail, subagent_delta=1)
+    elif kind == "subagent-stop":
+        _spawn_activity(source, "working", meta, subagent_delta=-1)
+    elif kind == "fail":
+        _spawn_activity(source, "idle", meta, detail=payload.get("error_message") or "turn failed")
+    elif kind == "end":
+        _spawn_activity(source, "ended", meta)
+    return 0
+
+
 # -- delivery child -----------------------------------------------------
 
 
@@ -232,3 +384,21 @@ def deliver(source: str, meta: dict | None = None) -> int:
     if not ensure_daemon():
         return 1
     return 0 if post_narration(text, source, meta=meta) else 1
+
+
+def deliver_activity(body: dict) -> int:
+    if not body.get("session_id"):
+        return 0
+    if not ensure_daemon():
+        return 1
+    req = urllib.request.Request(
+        _daemon_url() + "/activity",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            return 0 if resp.status == 200 else 1
+    except Exception:
+        return 1

@@ -95,12 +95,52 @@ final class DaemonClient: ObservableObject {
         case "session.updated":
             if let s = event.session { upsert(s) }
         case "session.removed":
-            if let key = event.key { sessions.removeAll { $0.key == key } }
+            if let key = event.key {
+                sessions.removeAll { $0.key == key }
+                NotificationManager.shared.withdrawAttention(sessionKey: key)
+            }
         case "mute.changed":
             muted = event.muted ?? muted
+        case "turn.completed":
+            if let key = event.key {
+                NotificationManager.shared.turnCompleted(
+                    sessionKey: key,
+                    agent: AgentStyle.label(event.source ?? "agent"),
+                    project: friendlyName(key: key, fallback: event.project),
+                    text: event.text
+                )
+            }
+        case "session.status":
+            if let key = event.key, let raw = event.status,
+               let status = SessionStatus(rawValue: raw) {
+                if status.needsAttention {
+                    let session = sessions.first { $0.key == key }
+                    // The key is "source:session_id"; the status event can
+                    // precede the session snapshot, so fall back to the key.
+                    let source = session?.source ?? String(key.split(separator: ":").first ?? "agent")
+                    NotificationManager.shared.needsAttention(
+                        sessionKey: key,
+                        agent: AgentStyle.label(source),
+                        project: friendlyName(key: key, fallback: session?.project),
+                        status: status,
+                        detail: event.detail
+                    )
+                } else {
+                    // Resumed or finished: the banner is stale, pull it.
+                    NotificationManager.shared.withdrawAttention(sessionKey: key)
+                }
+            }
         default:
             break
         }
+    }
+
+    /// The user's custom session name when set, else the project folder.
+    private func friendlyName(key: String, fallback: String?) -> String {
+        if let session = sessions.first(where: { $0.key == key }) {
+            return displayName(session)
+        }
+        return fallback ?? "?"
     }
 
     private func upsert(_ s: Session) {

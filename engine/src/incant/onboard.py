@@ -31,8 +31,9 @@ QSTYLE = Style([("highlighted", "reverse")])
 
 TOOL_TARGETS = {
     "claude": ("Claude Code", str(CLAUDE_SETTINGS)),
-    "codex": ("Codex", str(CODEX_CONFIG)),
+    "codex": ("Codex", f"{CODEX_CONFIG} + hooks.json"),
     "opencode": ("OpenCode", "~/.config/opencode/plugin/incant.js"),
+    "kimi": ("Kimi CLI", "~/.kimi-code/config.toml (or ~/.kimi/config.toml)"),
 }
 
 TLDR_SNIPPET = """\
@@ -89,7 +90,7 @@ def run_interactive_install(tools: list[str], yes: bool = False) -> int:
         targets = [t for t in tools if t in INSTALLERS]
     elif interactive:
         if not available:
-            console.print("[red]No supported tools detected (claude, codex, opencode).[/]")
+            console.print("[red]No supported tools detected (claude, codex, opencode, kimi).[/]")
             return 1
         targets = questionary.checkbox(
             "Which agents should incant narrate?",
@@ -106,7 +107,7 @@ def run_interactive_install(tools: list[str], yes: bool = False) -> int:
         targets = available
 
     if not targets:
-        console.print("[red]No supported tools detected (claude, codex, opencode).[/]")
+        console.print("[red]No supported tools detected (claude, codex, opencode, kimi).[/]")
         return 1
 
     console.print("\n[bold]This will edit:[/]")

@@ -52,13 +52,24 @@ def doctor_checks() -> list[dict]:
     checks.append({"id": "player", "title": "Audio player", "ok": bool(player),
                    "detail": player or "afplay/ffplay/aplay"})
 
+    from .install import KIMI_MARKER, detect_tools, kimi_config_path
+
     claude_ok = CLAUDE_SETTINGS.exists() and "incant hook claude" in CLAUDE_SETTINGS.read_text()
     codex_text = CODEX_CONFIG.read_text() if CODEX_CONFIG.exists() else ""
     codex_ok = "notify" in codex_text and "incant" in codex_text
-    checks.append({"id": "claude", "title": "Claude Code hook", "ok": claude_ok, "detail": str(CLAUDE_SETTINGS)})
-    checks.append({"id": "codex", "title": "Codex hook", "ok": codex_ok, "detail": str(CODEX_CONFIG)})
-    checks.append({"id": "opencode", "title": "OpenCode plugin", "ok": opencode_plugin_path().exists(),
-                   "detail": str(opencode_plugin_path())})
+    kimi_config = kimi_config_path()
+    kimi_ok = kimi_config.exists() and KIMI_MARKER in kimi_config.read_text()
+    hook_checks = [
+        ("claude", "Claude Code hook", claude_ok, str(CLAUDE_SETTINGS)),
+        ("codex", "Codex hook", codex_ok, str(CODEX_CONFIG)),
+        ("opencode", "OpenCode plugin", opencode_plugin_path().exists(), str(opencode_plugin_path())),
+        ("kimi", "Kimi CLI hook", kimi_ok, str(kimi_config)),
+    ]
+    detected = detect_tools()
+    for check_id, title, ok, detail in hook_checks:
+        # A tool that isn't on this machine at all is not a failure.
+        if detected.get(check_id) or ok:
+            checks.append({"id": check_id, "title": title, "ok": ok, "detail": detail})
 
     checks.append({"id": "config", "title": "Config file", "ok": CONFIG_PATH.exists(), "detail": str(CONFIG_PATH)})
     return checks

@@ -27,6 +27,7 @@ DEFAULT_VOICES = {
     "claude": "af_heart",
     "codex": "am_michael",
     "opencode": "bf_emma",
+    "kimi": "bm_george",
 }
 
 DEFAULT_CONFIG_TOML = """\
@@ -52,6 +53,7 @@ speed = 1.1
 claude = "af_heart"
 codex = "am_michael"
 opencode = "bf_emma"
+kimi = "bm_george"
 
 [speech]
 # How much of a reply becomes speech:

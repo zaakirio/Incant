@@ -30,11 +30,28 @@ struct BubbleDetailView: View {
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(client.displayName(s)).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                Text(AgentStyle.label(s.source)).font(.system(size: 11)).foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(AgentStyle.label(s.source)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    if let status = statusLine(s) {
+                        Text("· \(status)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(s.sessionStatus.needsAttention ? Color.orange : Color.secondary)
+                            .lineLimit(1)
+                    }
+                }
             }
             Spacer()
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
+    }
+
+    private func statusLine(_ s: Session) -> String? {
+        var parts: [String] = []
+        if s.sessionStatus != .idle {
+            parts.append(s.statusDetail ?? s.sessionStatus.label.lowercased())
+        }
+        if s.subagentCount > 0 { parts.append("\(s.subagentCount) agents") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     private func history(_ s: Session) -> some View {

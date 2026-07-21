@@ -1,21 +1,22 @@
 # incant
 
 Give your coding agents a voice.
-incant speaks each finished turn from **Claude Code**, **Codex**, and **OpenCode** through fast local text-to-speech.
-Single purpose by design: agent turns become speech, nothing else.
+incant speaks each finished turn from **Claude Code**, **Codex**, **OpenCode**, and **Kimi CLI** through fast local text-to-speech, and tracks what every session is doing in between: working, waiting for your approval, asking you a question, or fanning out subagents.
 Everything runs on your machine; no cloud, no API keys.
 
 ## How it works
 
 ```
-Claude Code (Stop hook) ─┐
-Codex (notify)           ├─> incant daemon ──> mlx-audio TTS ──> your speakers
-OpenCode (plugin)        ─┘   (clean, digest, queue)
+Claude Code (hooks)    ─┐
+Codex (notify + hooks)  ├─> incant daemon ──> mlx-audio TTS ──> your speakers
+OpenCode (plugin)       │   (clean, digest, queue,
+Kimi CLI (hooks)       ─┘    live session status)
 ```
 
-Each agent already has a "turn finished" hook.
+Each agent has a "turn finished" hook plus a set of lifecycle hooks.
 `incant install` wires them to a small local daemon that strips code blocks and markdown, applies your narration mode, synthesizes speech with [mlx-audio](https://github.com/Blaizzy/mlx-audio) (Kokoro by default), and plays narrations strictly one at a time so parallel sessions never talk over each other.
 Each agent speaks in its own voice, so you know who finished without looking.
+The same hooks feed a live status per session (working / needs approval / needs input / subagent count) that the menu bar app renders and turns into macOS notifications.
 
 ## Requirements
 
@@ -30,14 +31,14 @@ uv tool install incant   # or: pipx install incant / pip install incant
 incant install
 ```
 
-`incant install` walks you through it: pick which agents to hook, confirm the three files it edits, then it starts the daemon, downloads the voice model (~300 MB, first run only), and finishes by speaking out loud.
+`incant install` walks you through it: pick which agents to hook, confirm the files it edits, then it starts the daemon, downloads the voice model (~300 MB, first run only), and finishes by speaking out loud.
 If you heard it, you're done - the next agent turn narrates automatically.
 Use `incant install --yes` for a promptless install, and `incant doctor` any time something seems off.
 
 ## Commands
 
 ```
-incant install [tool...]   guided setup (claude / codex / opencode)
+incant install [tool...]   guided setup (claude / codex / opencode / kimi)
 incant uninstall [tool...] remove the hooks cleanly
 incant mode [full|tldr|summary]   get or set the narration mode
 incant mute [30m]          drop narrations, optionally for a duration
@@ -68,7 +69,21 @@ behavior = "auto"
 codex = "notify"
 ```
 
-Each running agent is tracked as a session; `incant sessions` lists them with their project, behavior, and unread state. Per-session overrides (and everything else) are what the forthcoming menu bar app drives over the daemon's HTTP + SSE API.
+Each running agent is tracked as a session; `incant sessions` lists them with their project, behavior, unread state, live status, and subagent count. Per-session overrides (and everything else) are what the menu bar app drives over the daemon's HTTP + SSE API.
+
+## Live status, approvals, and swarms
+
+Narration covers finished turns; the lifecycle hooks cover everything in between.
+Every wired agent reports these signals to the daemon's `/activity` endpoint:
+
+1. **Working** - the turn started (and periodic keepalives while tools run), so the UI can show an in-progress indicator.
+2. **Awaiting approval** - the agent is blocked on a permission prompt (Claude Code `PermissionRequest`/`Notification`, Codex `PermissionRequest` hook, OpenCode `permission` events, Kimi Code CLI `PermissionRequest`).
+3. **Awaiting input** - the agent asked you a question or went idle waiting for you.
+4. **Subagents** - swarm workers starting and stopping (`SubagentStart`/`SubagentStop` on Claude, Codex, and Kimi; child sessions on OpenCode). The parent session carries a live count rather than spawning a bubble per worker, so a 100-agent Kimi swarm stays readable.
+5. **Ended** - the session closed, so its bubble disappears immediately.
+
+The daemon exposes all of it on `/sessions` and the `/events` SSE stream (`session.status`, `turn.completed`), which the menu bar app turns into bubble states and macOS notifications.
+A finished turn resets its session to idle and clears the subagent count.
 
 ## Narration modes
 
@@ -98,6 +113,7 @@ Each agent gets its own voice so consecutive narrations are audibly attributable
 claude = "af_heart"
 codex = "am_michael"
 opencode = "bf_emma"
+kimi = "bm_george"
 ```
 
 List what's available: `curl 'localhost:5112/v1/audio/voices?model=mlx-community/Kokoro-82M-bf16'`.
@@ -131,6 +147,7 @@ speed = 1.1                      # 0.7 slow ... 1.5 fast
 claude   = "af_heart"            # American, female
 codex    = "am_michael"          # American, male
 opencode = "bf_emma"             # British, female
+kimi     = "bm_george"           # British, male
 
 [speech]
 mode = "full"                    # how MUCH is spoken: full | tldr | summary
@@ -200,7 +217,7 @@ incant uninstall
 uv tool uninstall incant
 ```
 
-Hooks are removed from `~/.claude/settings.json`, `~/.codex/config.toml`, and the OpenCode plugin directory.
+Hooks are removed from `~/.claude/settings.json`, `~/.codex/config.toml` + `~/.codex/hooks.json`, the OpenCode plugin directory, and `~/.kimi-code/config.toml` / `~/.kimi/config.toml`.
 Model weights live in the Hugging Face cache (`~/.cache/huggingface`) if you want those gone too.
 
 ## License

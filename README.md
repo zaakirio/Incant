@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>Give your coding agents a voice.</strong><br>
-  Local text-to-speech narration for Claude Code, Codex, and OpenCode — on your Mac, no cloud, no API keys.
+  Local text-to-speech narration for Claude Code, Codex, OpenCode, and Kimi CLI — on your Mac, no cloud, no API keys.
 </p>
 
 <p align="center">
@@ -18,7 +18,8 @@
 
 ---
 
-Incant speaks each finished turn from **Claude Code**, **Codex**, and **OpenCode** through fast local text-to-speech, with a native macOS menu bar app and floating per-session bubbles.
+Incant speaks each finished turn from **Claude Code**, **Codex**, **OpenCode**, and **Kimi CLI** through fast local text-to-speech, with a native macOS menu bar app and floating per-session bubbles.
+Beyond narration it tracks what every session is doing live: an in-progress indicator while an agent works, macOS notifications plus a pulsing bubble when one needs your approval or input, and a swarm counter while Kimi-style subagent fleets run.
 Everything runs on your machine.
 
 This is a monorepo:
@@ -36,18 +37,19 @@ Incant/
 ```sh
 # 1. the engine
 uv tool install incant      # or: pipx install incant
-incant install              # wires Claude Code / Codex / OpenCode, guided
+incant install              # wires Claude Code / Codex / OpenCode / Kimi, guided
 
 # 2. the app (optional, adds the menu bar + bubbles)
 brew install --cask incant  # once published; until then, build from app/
 ```
 
 The next time any agent finishes a turn, you hear a spoken digest of what it did.
+While it works you see a live in-progress indicator, and the moment it needs your approval you get a macOS notification.
 
 ## The two halves
 
-- **engine/** is the whole product on its own: a local daemon that cleans agent output, synthesizes speech with [mlx-audio](https://github.com/Blaizzy/mlx-audio) (Kokoro by default), and plays narrations one at a time. Fully usable from the CLI (`incant install`, `incant doctor`, `incant mode`, `incant mute`, `incant sessions`, …). See [engine/README.md](engine/README.md).
-- **app/** is a thin SwiftUI client of the engine's HTTP + SSE API. It renders live sessions as menu-bar controls and floating chat-head bubbles, with per-agent voices, hover-activated provider logos, and onboarding. See [app/README.md](app/README.md).
+- **engine/** is the whole product on its own: a local daemon that cleans agent output, synthesizes speech with [mlx-audio](https://github.com/Blaizzy/mlx-audio) (Kokoro by default), plays narrations one at a time, and tracks live session status (working / needs approval / needs input / subagent swarms) from each agent's lifecycle hooks. Fully usable from the CLI (`incant install`, `incant doctor`, `incant mode`, `incant mute`, `incant sessions`, …). See [engine/README.md](engine/README.md).
+- **app/** is a thin SwiftUI client of the engine's HTTP + SSE API. It renders live sessions as menu-bar controls and floating chat-head bubbles (spinning while working, pulsing orange when blocked on you, swarm-size badge), posts macOS notifications for finished turns and needed approvals, with per-agent voices, provider logos, and onboarding. See [app/README.md](app/README.md).
 
 Incant is speech-out only and deliberately speech-to-text agnostic: pair it with [Hex](https://github.com/kitlangton/Hex) (free/OSS), superwhisper, Wispr Flow, or any dictation tool to talk back to your agents. The onboarding lists options.
 

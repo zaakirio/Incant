@@ -6,6 +6,26 @@ struct HistoryEntry: Codable, Hashable {
     let at: Double
 }
 
+/// What a session is doing right now, as reported by agent lifecycle hooks.
+enum SessionStatus: String {
+    case idle
+    case working
+    case awaitingApproval = "awaiting_approval"
+    case awaitingInput = "awaiting_input"
+
+    /// The agent is blocked on the user (approval or an answer).
+    var needsAttention: Bool { self == .awaitingApproval || self == .awaitingInput }
+
+    var label: String {
+        switch self {
+        case .idle: return "Idle"
+        case .working: return "Working"
+        case .awaitingApproval: return "Needs approval"
+        case .awaitingInput: return "Needs input"
+        }
+    }
+}
+
 struct Session: Codable, Identifiable, Hashable {
     let key: String
     let source: String
@@ -18,11 +38,20 @@ struct Session: Codable, Identifiable, Hashable {
     let behaviorOverride: String?
     let unread: Bool
     let speaking: Bool
+    // Optional so snapshots from an older engine still decode.
+    let status: String?
+    let statusDetail: String?
+    let statusSince: Double?
+    let parentKey: String?
+    let subagents: Int?
     let lastSeen: Double
     let lastText: String?
     let history: [HistoryEntry]
 
     var id: String { key }
+
+    var sessionStatus: SessionStatus { SessionStatus(rawValue: status ?? "") ?? .idle }
+    var subagentCount: Int { subagents ?? 0 }
 
     enum CodingKeys: String, CodingKey {
         case key, source
@@ -32,6 +61,11 @@ struct Session: Codable, Identifiable, Hashable {
         case behavior
         case behaviorOverride = "behavior_override"
         case unread, speaking
+        case status
+        case statusDetail = "status_detail"
+        case statusSince = "status_since"
+        case parentKey = "parent_key"
+        case subagents
         case lastSeen = "last_seen"
         case lastText = "last_text"
         case history
@@ -46,12 +80,14 @@ struct DaemonConfig: Codable {
     var maxChars: Int
     var voices: [String: String]
     var ttsModel: String
+    var providerBehaviors: [String: String]?
 
     enum CodingKeys: String, CodingKey {
         case mode, behavior, voice, speed
         case maxChars = "max_chars"
         case voices
         case ttsModel = "tts_model"
+        case providerBehaviors = "provider_behaviors"
     }
 }
 
@@ -63,6 +99,13 @@ struct DaemonEvent: Decodable {
     let session: Session?
     let key: String?
     let muted: Bool?
+    // turn.completed
+    let source: String?
+    let project: String?
+    let text: String?
+    // session.status
+    let status: String?
+    let detail: String?
 }
 
 enum AgentStyle {
@@ -85,6 +128,7 @@ enum AgentStyle {
         case "claude": return "Claude Code"
         case "codex": return "Codex"
         case "opencode": return "OpenCode"
+        case "kimi": return "Kimi CLI"
         default: return source.capitalized
         }
     }

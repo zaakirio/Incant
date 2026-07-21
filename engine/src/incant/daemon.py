@@ -49,6 +49,11 @@ HISTORY = 20
 FIRST_SYNTH_TIMEOUT = 600.0  # first call may download model weights
 SYNTH_TIMEOUT = 120.0
 
+SESSION_STATUSES = ("idle", "working", "awaiting_approval", "awaiting_input")
+# Non-idle sessions outlive ACTIVE_WINDOW: a long agent turn or an approval
+# prompt the user hasn't seen yet must not silently vanish from the UI.
+STALE_WINDOW = 4 * ACTIVE_WINDOW
+
 
 # -- request models ----------------------------------------------------
 
@@ -60,6 +65,21 @@ class NarrateBody(BaseModel):
     cwd: str | None = None
     pid: int | None = None
     voice: str | None = None
+    parent_session_id: str | None = None
+
+
+class ActivityBody(BaseModel):
+    """A session lifecycle signal from an agent hook: the agent started
+    working, is blocked on an approval, needs input, or ended."""
+
+    source: str
+    session_id: str
+    status: str  # SESSION_STATUSES, or "ended" to drop the session
+    detail: str | None = None  # e.g. the permission prompt's message
+    cwd: str | None = None
+    pid: int | None = None
+    parent_session_id: str | None = None
+    subagent_delta: int | None = None  # +1/-1 as swarm workers start/stop
 
 
 class MuteBody(BaseModel):
@@ -118,6 +138,11 @@ class Session:
     pending_text: str | None = None  # unspoken narration (notify mode)
     last_seen: float = 0.0
     speaking: bool = False
+    status: str = "idle"
+    status_detail: str | None = None
+    status_since: float = 0.0
+    parent_key: str | None = None  # set for subagent/swarm children
+    subagents: int = 0  # live subagent/swarm-worker count for this session
     _dedup_text: str = ""
     _dedup_at: float = 0.0
     history: deque = field(default_factory=lambda: deque(maxlen=HISTORY))
@@ -147,6 +172,11 @@ class Session:
             "behavior_override": self.behavior_override,
             "unread": self.unread,
             "speaking": self.speaking,
+            "status": self.status,
+            "status_detail": self.status_detail,
+            "status_since": self.status_since,
+            "parent_key": self.parent_key,
+            "subagents": self.subagents,
             "last_seen": self.last_seen,
             "last_text": self.history[-1]["text"] if self.history else None,
             "history": list(self.history),
@@ -383,9 +413,53 @@ class State:
     def sweep(self) -> None:
         now = time.time()
         for key, session in list(self.sessions.items()):
-            if now - session.last_seen > ACTIVE_WINDOW:
+            window = ACTIVE_WINDOW if session.status == "idle" else STALE_WINDOW
+            if now - session.last_seen > window:
                 del self.sessions[key]
                 self.events.publish({"type": "session.removed", "key": key})
+
+    def _upsert(self, source: str, session_id: str, cwd: str | None, pid: int | None,
+                parent_session_id: str | None = None) -> Session:
+        key = f"{source}:{session_id}"
+        session = self.sessions.get(key)
+        if session is None:
+            session = Session(source=source, session_id=session_id)
+            self.sessions[key] = session
+        if cwd:
+            session.cwd = cwd
+        if pid:
+            session.pid = pid
+        if parent_session_id:
+            session.parent_key = f"{source}:{parent_session_id}"
+        session.last_seen = time.time()
+        return session
+
+    def _set_status(self, session: Session, status: str, detail: str | None,
+                    cfg: Config | None = None) -> None:
+        changed = status != session.status or detail != session.status_detail
+        session.status = status
+        session.status_detail = detail
+        if changed:
+            session.status_since = time.time()
+            self.events.publish(
+                {"type": "session.status", "key": session.key, "status": status, "detail": detail}
+            )
+        self._emit_session(session, cfg)
+
+    def handle_activity(self, body: ActivityBody) -> dict:
+        if body.status == "ended":
+            key = f"{body.source}:{body.session_id}"
+            if key in self.sessions:
+                del self.sessions[key]
+                self.events.publish({"type": "session.removed", "key": key})
+            return {"ok": True, "removed": True}
+        if body.status not in SESSION_STATUSES:
+            return {"ok": False, "error": f"status must be one of {SESSION_STATUSES} or 'ended'"}
+        session = self._upsert(body.source, body.session_id, body.cwd, body.pid, body.parent_session_id)
+        if body.subagent_delta:
+            session.subagents = max(0, session.subagents + body.subagent_delta)
+        self._set_status(session, body.status, body.detail)
+        return {"ok": True, "status": body.status, "subagents": session.subagents}
 
     def _emit_session(self, session: Session, cfg: Config | None = None) -> None:
         self.events.publish(
@@ -416,15 +490,7 @@ class State:
             self.speaker.enqueue(Narration(text=body.text, source=body.source))
             return {"queued": True}
 
-        session = self.sessions.get(f"{body.source}:{body.session_id}")
-        if session is None:
-            session = Session(source=body.source, session_id=body.session_id)
-            self.sessions[session.key] = session
-        if body.cwd:
-            session.cwd = body.cwd
-        if body.pid:
-            session.pid = body.pid
-        session.last_seen = time.time()
+        session = self._upsert(body.source, body.session_id, body.cwd, body.pid, body.parent_session_id)
 
         # Per-session dedup: agents sometimes fire the hook twice per turn.
         now = self._mono()
@@ -434,6 +500,21 @@ class State:
             return {"queued": False, "duplicate": True}
         session._dedup_text = body.text
         session._dedup_at = now
+
+        # A finished turn ends whatever the session was doing.
+        session.status = "idle"
+        session.status_detail = None
+        session.status_since = time.time()
+        session.subagents = 0
+        self.events.publish(
+            {
+                "type": "turn.completed",
+                "key": session.key,
+                "source": session.source,
+                "project": session.project,
+                "text": body.text,
+            }
+        )
 
         behavior = self.effective_behavior(session, cfg)
         muted = self.muted
@@ -544,6 +625,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
             "mode": live.speech_mode,
             "behavior": live.behavior,
             "sessions": len(state.sessions),
+            "working": sum(1 for s in state.sessions.values() if s.status == "working"),
+            "attention": sum(
+                1 for s in state.sessions.values() if s.status.startswith("awaiting_")
+            ),
             "tts_mode": cfg.tts_mode,
             "tts_url": cfg.tts_base_url,
         }
@@ -568,6 +653,9 @@ def create_app(cfg: Config | None = None) -> FastAPI:
                         event = await asyncio.wait_for(q.get(), timeout=15.0)
                         yield f"data: {json.dumps(event)}\n\n"
                     except asyncio.TimeoutError:
+                        # Piggyback expiry on the keepalive tick so stale
+                        # sessions disappear without waiting for a request.
+                        state.sweep()
                         yield ": keepalive\n\n"
             finally:
                 state.events.unsubscribe(q)
@@ -577,6 +665,10 @@ def create_app(cfg: Config | None = None) -> FastAPI:
     @app.post("/narrate")
     async def narrate(body: NarrateBody) -> dict:
         return state.handle_narration(body)
+
+    @app.post("/activity")
+    async def activity(body: ActivityBody) -> dict:
+        return state.handle_activity(body)
 
     @app.post("/say")
     async def say(body: NarrateBody) -> dict:
